@@ -1,0 +1,45 @@
+# Приклади циклів
+
+## Вивід кроків лічильника від 0 до 4
+for i in range(5):
+    print(f"Поточний крок лічильника i = {i}")
+
+
+# Сортування масивів
+
+# Демонстрація вкладених циклів із масивом
+arr = [5, 2, 9, 1]
+n = len(arr)
+
+for i in range(n):
+    for j in range(0, n - i - 1):
+        if arr[j] > arr[j + 1]:
+            arr[j], arr[j + 1] = arr[j + 1], arr[j]
+
+print("Результат сортування:", arr)
+
+# Приклади бібліотеки Tkinter
+
+import tkinter as tk
+
+root = tk.Tk()
+root.title("Моя перша програма")
+root.geometry("350x250")
+
+label = tk.Label(root, text="Привіт, Tkinter!")
+btn = tk.Button(root, text="Натисни мене")
+
+print("Вікно Tkinter сконфігуровано!")
+
+# Приклади бібліотеки Matplotlib
+
+import matplotlib.pyplot as plt
+
+x = [0, 1, 2, 3, 4, 5]
+y = [0, 1, 4, 9, 16, 25]
+
+plt.title("Графік квадратичної функції")
+plt.xlabel("Аргумент (X)")
+plt.ylabel("Квадрат числа (Y)")
+plt.plot(x, y)
+print("Графік успішно передано на візуалізацію!")
