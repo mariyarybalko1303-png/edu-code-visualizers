@@ -1,0 +1,424 @@
+﻿{% load schedule_extras %}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Розклад занять</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 150px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+        
+        .main-content { margin-left: 170px; padding: 25px 30px; }
+        h1 { margin: 0 0 20px 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+
+        .alerts { margin-bottom: 15px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
+        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        .controls-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 15px; margin-bottom: 22px; }
+        .box { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; }
+        .box h3 { margin-top: 0; font-size: 14px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 12px; }
+        
+        .field-label { display: block; font-size: 12px; color: #64748b; margin-bottom: 4px; font-weight: 500; }
+        .form-group { margin-bottom: 10px; }
+
+        input, select, button { width: 100%; padding: 8px 10px; margin-bottom: 8px; border: 1px solid #cbd5e1; border-radius: 5px; box-sizing: border-box; font-size: 13px; }
+        button { background: #0f172a; color: #fff; border: none; font-weight: 600; cursor: pointer; padding: 9px; border-radius: 5px; }
+        button:hover { opacity: 0.9; }
+
+        .btn-assign { background: #0284c7 !important; }
+        .btn-assign:hover { background: #0369a1 !important; }
+
+        .btn-solver { background: #7c3aed !important; }
+        .btn-solver:hover { background: #6d28d9 !important; }
+
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .week-nav { display: flex; gap: 12px; align-items: center; }
+        .week-btn { text-decoration: none; padding: 8px 20px; border-radius: 6px; font-weight: 700; font-size: 14px; color: #fff; transition: 0.2s; }
+        
+        .btn-week-1 { background: #f87171; }
+        .btn-week-1.active, .btn-week-1:hover { background: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.3); }
+
+        .btn-week-2 { background: #4ade80; }
+        .btn-week-2.active, .btn-week-2:hover { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.3); }
+
+        .btn-download { background: #2563eb; color: #fff; text-decoration: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-download:hover { background: #1d4ed8; }
+
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.05); border: 1px solid #cbd5e1; }
+        th, td { border: 1px solid #e2e8f0; padding: 12px 10px; text-align: center; vertical-align: top; }
+        th { background: #f8fafc; color: #1e293b; font-size: 14px; font-weight: 600; }
+        .period-cell { width: 90px; font-weight: bold; background: #f8fafc; font-size: 13px; vertical-align: middle; }
+        
+        .no-slot { background: #f8fafc; color: #cbd5e1; font-size: 16px; padding: 12px 0; }
+        .window { color: #cbd5e1; font-size: 13px; display: inline-block; padding-top: 10px; }
+
+        .lesson-card { position: relative; background: #f0fdf4; border-left: 4px solid #16a34a; padding: 7px 9px; border-radius: 4px; text-align: left; }
+        .week-1-active .lesson-card { background: #fef2f2; border-left-color: #dc2626; }
+        .stream-card { border-left-color: #eab308 !important; background: #fefce8 !important; }
+
+        .lesson-title { font-weight: bold; color: #0f172a; font-size: 13px; line-height: 1.3; padding-right: 20px; }
+        .lesson-teacher { color: #475569; font-size: 12px; margin-top: 3px; }
+        .lesson-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+        .badge-group { background: #e2e8f0; color: #334155; font-size: 11px; padding: 1px 6px; border-radius: 3px; }
+        .badge-room { background: #ede9fe; color: #6d28d9; font-size: 11px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+        .badge-stream { background: #fef08a; color: #854d0e; font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: bold; }
+
+        .btn-delete-lesson {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            width: 20px;
+            height: 20px;
+            background: rgba(239, 68, 68, 0.15);
+            color: #dc2626;
+            border: none;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            padding: 0;
+            margin: 0;
+            line-height: 1;
+            transition: 0.15s;
+        }
+        .btn-delete-lesson:hover { background: #dc2626; color: #fff; }
+
+        /* Список недоступності */
+        .unavail-list { max-height: 140px; overflow-y: auto; margin-top: 10px; border-top: 1px dashed #fecdd3; padding-top: 8px; }
+        .unavail-item { display: flex; justify-content: space-between; align-items: center; background: #fff1f2; padding: 4px 8px; border-radius: 4px; margin-bottom: 4px; font-size: 11px; color: #9f1239; }
+        .unavail-actions { display: flex; gap: 6px; align-items: center; }
+        .btn-edit-unavail { color: #0284c7; text-decoration: none; font-size: 13px; font-weight: bold; }
+        .btn-del-unavail { background: none; border: none; color: #e11d48; cursor: pointer; padding: 0; font-size: 12px; font-weight: bold; margin: 0; width: auto; }
+    </style>
+</head>
+<body class="{% if current_week == 1 %}week-1-active{% endif %}">
+
+    <div class="sidebar">
+        <a href="/" class="sidebar-item active">📅 Розклад</a>
+        <a href="/import/" class="sidebar-item">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        <h1>Розклад занять</h1>
+
+        {% if messages %}
+        <div class="alerts">
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="controls-container">
+            <!-- 1. Довідники -->
+            <div class="box">
+                <h3>+ Довідники</h3>
+                <form method="POST" class="form-group">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_teacher">
+                    <label class="field-label">ПІБ викладача</label>
+                    <input type="text" name="name" required>
+                    <button type="submit">Додати викладача</button>
+                </form>
+                
+                <form method="POST" class="form-group">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_subject">
+                    <label class="field-label">Назва дисципліни</label>
+                    <input type="text" name="title" required>
+                    <button type="submit">Додати дисципліну</button>
+                </form>
+
+                <form method="POST" class="form-group">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_room">
+                    <label class="field-label">Номер аудиторії</label>
+                    <input type="text" name="number" required>
+                    <button type="submit">Додати аудиторію</button>
+                </form>
+            </div>
+
+            <!-- 2. Призначити пару вручну -->
+            <div class="box" style="border-left: 4px solid #0284c7;">
+                <h3 style="color: #0284c7;">+ Призначити пару вручну</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="manual_assign">
+                    
+                    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 8px;">
+                        <div class="form-group">
+                            <label class="field-label">День тижня</label>
+                            <select name="day" required>
+                                <option value="Monday">Понеділок</option>
+                                <option value="Tuesday">Вівторок</option>
+                                <option value="Wednesday">Середа</option>
+                                <option value="Thursday">Четвер</option>
+                                <option value="Friday">П'ятниця</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Пара</label>
+                            <select name="period" required>
+                                {% for p in periods %}<option value="{{ p }}">{{ p }} пара</option>{% endfor %}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Дисципліна</label>
+                        <select name="subject_id" required>
+                            <option value=""></option>
+                            {% for s in subjects %}<option value="{{ s.id }}">{{ s.title }}</option>{% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id" required>
+                            <option value=""></option>
+                            {% for t in teachers %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+                        </select>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div class="form-group">
+                            <label class="field-label">Аудиторія</label>
+                            <select name="room_id">
+                                <option value=""></option>
+                                {% for r in rooms %}<option value="{{ r.id }}">{{ r.number }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="field-label">Група</label>
+                            <input type="text" name="groups" required>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+                        <input type="checkbox" name="is_stream" id="manual_stream" style="width: auto; margin: 0;">
+                        <label for="manual_stream" style="font-size: 12px; color: #475569; cursor: pointer;">Потокова лекція</label>
+                    </div>
+
+                    <button type="submit" class="btn-assign">Записати в розклад</button>
+                </form>
+            </div>
+
+            <!-- 3. Недоступність викладачів (із редагуванням та списком) -->
+            <div class="box" style="border-left: 4px solid #f43f5e;">
+                <h3 style="color: #e11d48;">
+                    {% if editing_unavail %}✎ Редагувати зайнятість{% else %}Зайнятість викладачів{% endif %}
+                </h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="save_unavailability">
+                    {% if editing_unavail %}
+                        <input type="hidden" name="unavail_id" value="{{ editing_unavail.id }}">
+                    {% endif %}
+                    
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id" required>
+                            <option value=""></option>
+                            {% for t in teachers %}
+                                <option value="{{ t.id }}" {% if editing_unavail and editing_unavail.teacher_id == t.id %}selected{% endif %}>{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">День тижня</label>
+                        <select name="day" required>
+                            <option value="Monday" {% if editing_unavail and editing_unavail.day == "Monday" %}selected{% endif %}>Понеділок</option>
+                            <option value="Tuesday" {% if editing_unavail and editing_unavail.day == "Tuesday" %}selected{% endif %}>Вівторок</option>
+                            <option value="Wednesday" {% if editing_unavail and editing_unavail.day == "Wednesday" %}selected{% endif %}>Середа</option>
+                            <option value="Thursday" {% if editing_unavail and editing_unavail.day == "Thursday" %}selected{% endif %}>Четвер</option>
+                            <option value="Friday" {% if editing_unavail and editing_unavail.day == "Friday" %}selected{% endif %}>П'ятниця</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Пара</label>
+                        <select name="period" required>
+                            <option value="0" {% if editing_unavail and editing_unavail.period == 0 %}selected{% endif %}>Увесь день</option>
+                            {% for p in periods %}
+                                <option value="{{ p }}" {% if editing_unavail and editing_unavail.period == p %}selected{% endif %}>{{ p }} пара</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <button type="submit" style="background: #e11d48;">
+                        {% if editing_unavail %}Зберегти зміни{% else %}Зафіксувати недоступність{% endif %}
+                    </button>
+                    {% if editing_unavail %}
+                        <a href="/?week={{ current_week }}" style="display:block; text-align:center; font-size:12px; color:#64748b; margin-top:4px; text-decoration:none;">Скасувати</a>
+                    {% endif %}
+                </form>
+
+                <!-- Список активних обмежень для редагування/видалення -->
+                {% if unavailabilities %}
+                <div class="unavail-list">
+                    <span class="field-label" style="margin-bottom:4px;">Активні обмеження:</span>
+                    {% for un in unavailabilities %}
+                    <div class="unavail-item">
+                        <span><b>{{ un.teacher.name }}</b>: {{ un.get_day_display }} ({% if un.period == 0 %}весь день{% else %}{{ un.period }} п.{% endif %})</span>
+                        <div class="unavail-actions">
+                            <a href="/?week={{ current_week }}&edit_unavail={{ un.id }}" class="btn-edit-unavail" title="Змінити">✎</a>
+                            <form method="POST" style="margin:0; padding:0; display:inline;" onsubmit="return confirm('Видалити це обмеження?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="delete_unavailability">
+                                <input type="hidden" name="unavail_id" value="{{ un.id }}">
+                                <button type="submit" class="btn-del-unavail" title="Видалити">✕</button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- 4. Автоматичний рушій CSP -->
+            <div class="box" style="border: 2px solid #7c3aed; background: #faf5ff;">
+                <h3 style="color: #6d28d9; border-color: #ddd6fe;">Рушій (Потоки + CSP)</h3>
+                
+                <form method="POST" style="margin-bottom: 12px;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_requirement">
+                    
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id" required>
+                            <option value=""></option>
+                            {% for t in teachers %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Дисципліна</label>
+                        <select name="subject_id" required>
+                            <option value=""></option>
+                            {% for s in subjects %}<option value="{{ s.id }}">{{ s.title }}</option>{% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Групи</label>
+                        <input type="text" name="groups" required>
+                    </div>
+
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" name="is_stream" id="is_stream" style="width: auto; margin: 0;">
+                            <label for="is_stream" style="font-size: 12px; color: #475569; cursor: pointer; font-weight: 500;">Потокова лекція</label>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <label class="field-label" style="margin: 0;">Пар:</label>
+                            <input type="number" name="hours" min="1" max="10" style="width: 55px; margin: 0; padding: 4px 6px;" required>
+                        </div>
+                    </div>
+
+                    <button type="submit" style="background: #6d28d9;">+ Додати навантаження</button>
+                </form>
+
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="auto_generate">
+                    <button type="submit" class="btn-solver">Розставити без колізій (CSP)</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="top-bar">
+            <div class="week-nav">
+                <a href="?week=1" class="week-btn btn-week-1 {% if current_week == 1 %}active{% endif %}">1 тиждень</a>
+                <a href="?week=2" class="week-btn btn-week-2 {% if current_week == 2 %}active{% endif %}">2 тиждень</a>
+            </div>
+            <a href="/export/?week={{ current_week }}" class="btn-download">📥 Завантажити Excel ({{ current_week }} тиждень)</a>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th class="period-cell">Пара</th>
+                    {% for day_key, day_label in days_order %}
+                        <th>{{ day_label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in periods %}
+                <tr>
+                    <td class="period-cell">{{ p }} пара</td>
+
+                    <!-- Понеділок -->
+                    <td>
+                        {% if p == 8 %}
+                            <div class="no-slot">—</div>
+                        {% else %}
+                            {% with item=grid|dict_lookup:p|dict_lookup:"Monday" %}
+                                {% if item %}
+                                    <div class="lesson-card {% if item.is_stream %}stream-card{% endif %}">
+                                        <form method="POST" style="margin:0; padding:0; display:inline;" onsubmit="return confirm('Видалити цю пару з розкладу?');">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="delete_lesson">
+                                            <input type="hidden" name="item_id" value="{{ item.id }}">
+                                            <button type="submit" class="btn-delete-lesson" title="Видалити пару">✕</button>
+                                        </form>
+
+                                        <div class="lesson-title">{{ item.subject.title }}</div>
+                                        <div class="lesson-teacher">{{ item.teacher.name }}</div>
+                                        <div class="lesson-meta">
+                                            {% if item.groups %}<span class="badge-group">гр. {{ item.groups }}</span>{% endif %}
+                                            {% if item.room %}<span class="badge-room">ауд. {{ item.room.number }}</span>{% endif %}
+                                            {% if item.is_stream %}<span class="badge-stream">ПОТІК</span>{% endif %}
+                                        </div>
+                                    </div>
+                                {% else %}
+                                    <span class="window">Вікно</span>
+                                {% endif %}
+                            {% endwith %}
+                        {% endif %}
+                    </td>
+
+                    <!-- Вівторок..П'ятниця -->
+                    {% for day_key, day_label in days_order|slice:"1:" %}
+                    <td>
+                        {% with item=grid|dict_lookup:p|dict_lookup:day_key %}
+                            {% if item %}
+                                <div class="lesson-card {% if item.is_stream %}stream-card{% endif %}">
+                                    <form method="POST" style="margin:0; padding:0; display:inline;" onsubmit="return confirm('Видалити цю пару з розкладу?');">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="action" value="delete_lesson">
+                                        <input type="hidden" name="item_id" value="{{ item.id }}">
+                                        <button type="submit" class="btn-delete-lesson" title="Видалити пару">✕</button>
+                                    </form>
+
+                                    <div class="lesson-title">{{ item.subject.title }}</div>
+                                    <div class="lesson-teacher">{{ item.teacher.name }}</div>
+                                    <div class="lesson-meta">
+                                        {% if item.groups %}<span class="badge-group">гр. {{ item.groups }}</span>{% endif %}
+                                        {% if item.room %}<span class="badge-room">ауд. {{ item.room.number }}</span>{% endif %}
+                                        {% if item.is_stream %}<span class="badge-stream">ПОТІК</span>{% endif %}
+                                    </div>
+                                </div>
+                            {% else %}
+                                <span class="window">Вікно</span>
+                            {% endif %}
+                        {% endwith %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</body>
+</html>
