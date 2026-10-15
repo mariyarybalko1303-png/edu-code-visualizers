@@ -1,0 +1,205 @@
+{% load schedule_extras %}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Розклад занять кафедри</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 150px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+        
+        .main-content { margin-left: 170px; padding: 25px 30px; }
+        h1 { margin: 0 0 4px 0; font-size: 22px; font-weight: 700; color: #0f172a; }
+        .sub-header { color: #64748b; margin-bottom: 20px; font-size: 13px; }
+
+        /* Повідомлення */
+        .alerts { margin-bottom: 15px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
+        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .alert-warning { background: #fef9c3; color: #854d0e; border: 1px solid #fef08a; }
+
+        /* Панель додавання */
+        .controls-container { display: grid; grid-template-columns: 1fr 1fr 1.6fr; gap: 15px; margin-bottom: 22px; }
+        .box { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; }
+        .box h3 { margin-top: 0; font-size: 14px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 12px; }
+        input, select, button { width: 100%; padding: 8px 10px; margin-bottom: 8px; border: 1px solid #cbd5e1; border-radius: 5px; box-sizing: border-box; font-size: 13px; }
+        button { background: #0284c7; color: #fff; border: none; font-weight: 600; cursor: pointer; padding: 9px; }
+        button:hover { background: #0369a1; }
+
+        /* Перемикач тижнів */
+        .week-nav { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        .week-nav span { font-weight: 600; font-size: 13px; color: #475569; }
+        .week-nav a { text-decoration: none; padding: 7px 16px; border-radius: 6px; font-weight: 600; font-size: 13px; color: #334155; background: #e2e8f0; }
+        .week-nav a.active { background: #0284c7; color: #fff; }
+
+        /* Таблиця розкладу */
+        table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.05); border: 1px solid #cbd5e1; }
+        th, td { border: 1px solid #e2e8f0; padding: 10px 8px; text-align: center; vertical-align: top; }
+        th { background: #f8fafc; color: #334155; font-size: 13px; font-weight: 600; }
+        .period-cell { width: 85px; font-weight: bold; background: #f8fafc; font-size: 13px; vertical-align: middle; }
+        
+        .no-slot { background: #f1f5f9; color: #94a3b8; font-style: italic; font-size: 12px; padding: 12px 0; border-radius: 4px; }
+        .window { color: #cbd5e1; font-size: 12px; display: inline-block; padding-top: 10px; }
+
+        .lesson-card { background: #f0f9ff; border-left: 4px solid #0284c7; padding: 6px 8px; border-radius: 4px; text-align: left; }
+        .lesson-title { font-weight: bold; color: #0369a1; font-size: 13px; line-height: 1.3; }
+        .lesson-teacher { color: #475569; font-size: 12px; margin-top: 3px; }
+        .lesson-group { display: inline-block; background: #e2e8f0; color: #334155; font-size: 11px; padding: 1px 5px; border-radius: 3px; margin-top: 4px; }
+    </style>
+</head>
+<body>
+
+    <!-- Бічна панель -->
+    <div class="sidebar">
+        <a href="/" class="sidebar-item active">📅 Розклад</a>
+        <a href="{% url 'import_schedule' %}" class="sidebar-item">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        <h1>Розклад занять</h1>
+        <div class="sub-header">Структура: Понеділок (1–7 пар) | Вівторок–П'ятниця (1–8 пар)</div>
+
+        <!-- Системні сповіщення -->
+        {% if messages %}
+        <div class="alerts">
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- Панель дій -->
+        <div class="controls-container">
+            <!-- 1. Додати викладача -->
+            <div class="box">
+                <h3>+ Додати викладача</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_teacher">
+                    <input type="text" name="name" placeholder="ПІБ" required>
+                    <button type="submit">Зберегти викладача</button>
+                </form>
+                <small style="color: #64748b;">У базі: {{ teachers.count }}</small>
+            </div>
+
+            <!-- 2. Додати дисципліну -->
+            <div class="box">
+                <h3>+ Додати дисципліну</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_subject">
+                    <input type="text" name="title" placeholder="Назва" required>
+                    <button type="submit">Зберегти дисципліну</button>
+                </form>
+                <small style="color: #64748b;">У базі: {{ subjects.count }}</small>
+            </div>
+
+            <!-- 3. Призначити пару -->
+            <div class="box">
+                <h3>+ Призначити пару</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="assign_lesson">
+                    <div style="display: flex; gap: 8px;">
+                        <select name="day" required>
+                            <option value="Monday">Понеділок</option>
+                            <option value="Tuesday">Вівторок</option>
+                            <option value="Wednesday">Середа</option>
+                            <option value="Thursday">Четвер</option>
+                            <option value="Friday">П'ятниця</option>
+                        </select>
+                        <select name="period" required>
+                            {% for p in periods %}
+                                <option value="{{ p }}">{{ p }} пара</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <select name="teacher_id" required>
+                            <option value="">-- Викладач --</option>
+                            {% for t in teachers %}
+                                <option value="{{ t.id }}">{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="subject_id" required>
+                            <option value="">-- Дисципліна --</option>
+                            {% for s in subjects %}
+                                <option value="{{ s.id }}">{{ s.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <input type="text" name="group_name" value="314-і" placeholder="Група" required>
+                    <button type="submit">Поставити пару в розклад</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Перемикач тижнів -->
+        <div class="week-nav">
+            <span>Тиждень:</span>
+            <a href="?week=1" class="{% if current_week == 1 %}active{% endif %}">1-й тиждень</a>
+            <a href="?week=2" class="{% if current_week == 2 %}active{% endif %}">2-й тиждень</a>
+        </div>
+
+        <!-- Сітка розкладу -->
+        <table>
+            <thead>
+                <tr>
+                    <th class="period-cell">Пара</th>
+                    {% for day_key, day_label in days_order %}
+                        <th>{{ day_label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in periods %}
+                <tr>
+                    <td class="period-cell">{{ p }} пара</td>
+
+                    <!-- Понеділок (лише 1..7 пар) -->
+                    <td>
+                        {% if p == 8 %}
+                            <div class="no-slot">— (немає пари)</div>
+                        {% else %}
+                            {% with item=grid|dict_lookup:p|dict_lookup:"Monday" %}
+                                {% if item %}
+                                    <div class="lesson-card">
+                                        <div class="lesson-title">{{ item.subject.title }}</div>
+                                        <div class="lesson-teacher">{{ item.teacher.name }}</div>
+                                        <span class="lesson-group">гр. {{ item.group_name }}</span>
+                                    </div>
+                                {% else %}
+                                    <span class="window">Вікно</span>
+                                {% endif %}
+                            {% endwith %}
+                        {% endif %}
+                    </td>
+
+                    <!-- Вівторок, Середа, Четвер, П'ятниця (1..8 пар) -->
+                    {% for day_key, day_label in days_order|slice:"1:" %}
+                    <td>
+                        {% with item=grid|dict_lookup:p|dict_lookup:day_key %}
+                            {% if item %}
+                                <div class="lesson-card">
+                                    <div class="lesson-title">{{ item.subject.title }}</div>
+                                    <div class="lesson-teacher">{{ item.teacher.name }}</div>
+                                    <span class="lesson-group">гр. {{ item.group_name }}</span>
+                                </div>
+                            {% else %}
+                                <span class="window">Вікно</span>
+                            {% endif %}
+                        {% endwith %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</body>
+</html>
