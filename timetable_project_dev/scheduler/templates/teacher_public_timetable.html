@@ -1,0 +1,240 @@
+﻿{% load schedule_extras %}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Розклад занять викладачів</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 185px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+
+        .main-content { margin-left: 205px; padding: 25px 35px; max-width: 1200px; }
+
+        /* Верхня панель вибору точно як на скріншоті */
+        .selector-bar {
+            background: #fff;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 16px 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            border-radius: 8px;
+            margin-bottom: 24px;
+        }
+
+        .select-group label {
+            display: block;
+            font-size: 14px;
+            color: #1e293b;
+            font-weight: 500;
+            margin-bottom: 6px;
+        }
+
+        .select-group select {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+            background: #fff;
+            color: #0f172a;
+            outline: none;
+            cursor: pointer;
+        }
+        .select-group select:focus {
+            border-color: #0284c7;
+            box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2);
+        }
+
+        /* Картка розкладу */
+        .schedule-display {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+
+        .top-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .week-toggle { display: flex; gap: 10px; }
+        .week-link { text-decoration: none; padding: 7px 18px; border-radius: 6px; font-weight: 700; font-size: 13px; color: #fff; }
+        .btn-w1 { background: #f87171; }
+        .btn-w1.active { background: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.25); }
+        .btn-w2 { background: #4ade80; }
+        .btn-w2.active { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.25); }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #e2e8f0; padding: 11px 14px; text-align: left; font-size: 13px; }
+        th { background: #f8fafc; color: #475569; font-weight: 600; }
+        tr:hover { background: #f8fafc; }
+
+        .badge-group { background: #e2e8f0; color: #334155; font-size: 11px; padding: 2px 7px; border-radius: 4px; font-weight: 600; }
+        .tag-stream { background: #fef08a; color: #854d0e; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 6px; }
+        .tag-room { background: #ede9fe; color: #6d28d9; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .empty-placeholder { text-align: center; color: #94a3b8; padding: 40px 20px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <a href="/" class="sidebar-item">📅 Розклад</a>
+        <a href="/time-table/student/" class="sidebar-item">🎓 Розклад студента</a>
+        <a href="/time-table/teacher/" class="sidebar-item active">👨‍🏫 Розклад викладача</a>
+        <a href="/time-table/selective/bachelor/" class="sidebar-item">📚 Вибіркові (Бакалаври)</a>
+        <a href="/time-table/selective/master/" class="sidebar-item">📖 Вибіркові (Магістри)</a>
+        <a href="/time-table/selective/postgraduate/" class="sidebar-item">🎓 Дисципліни (Аспіранти)</a>
+        <a href="/students/" class="sidebar-item">👨‍🎓 Студенти</a>
+        <a href="/teachers/" class="sidebar-item">👨‍🏫 Викладачі</a>
+        <a href="/import/" class="sidebar-item">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        <!-- Панель фільтрів: Кафедра | Викладач -->
+        <div class="selector-bar">
+            <div class="select-group">
+                <label for="select-dept">Кафедра</label>
+                <select id="select-dept">
+                    <option value="">--Кафедра--</option>
+                    {% for d in departments %}
+                        <option value="{{ d }}" {% if selected_dept == d %}selected{% endif %}>{{ d }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="select-group">
+                <label for="select-teacher">Викладач</label>
+                <select id="select-teacher" {% if not selected_dept %}disabled{% endif %}>
+                    <option value="">--Викладач--</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Відображення розкладу викладача -->
+        <div class="schedule-display">
+            {% if selected_teacher %}
+                <div class="top-info">
+                    <div>
+                        <h2 style="margin: 0 0 6px 0; font-size: 20px; color: #0f172a;">
+                            {{ selected_teacher.name }}
+                        </h2>
+                        <div style="font-size: 13px; color: #64748b;">
+                            <span><b>Кафедра:</b> {{ selected_teacher.department|default:"—" }}</span>
+                            <span style="margin-left: 14px;"><b>Занять на тиждень:</b> {{ lessons|length }}</span>
+                        </div>
+                    </div>
+
+                    <div class="week-toggle">
+                        <a href="?department={{ selected_dept }}&teacher_id={{ selected_teacher_id }}&week=1"
+                           class="week-link btn-w1 {% if current_week == 1 %}active{% endif %}">1 тиждень</a>
+                        <a href="?department={{ selected_dept }}&teacher_id={{ selected_teacher_id }}&week=2"
+                           class="week-link btn-w2 {% if current_week == 2 %}active{% endif %}">2 тиждень</a>
+                    </div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 140px;">День тижня</th>
+                            <th style="width: 100px; text-align: center;">Пара</th>
+                            <th>Дисципліна</th>
+                            <th>Групи</th>
+                            <th style="width: 120px;">Аудиторія</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for l in lessons %}
+                        <tr>
+                            <td style="font-weight: 600;">{{ l.get_day_display }}</td>
+                            <td style="text-align: center; font-weight: bold;">{{ l.period }} пара</td>
+                            <td style="font-weight: 600; color: #0284c7;">
+                                {{ l.subject.title }}
+                                {% if l.is_stream %}<span class="tag-stream">ПОТІК</span>{% endif %}
+                            </td>
+                            <td>
+                                {% if l.groups %}<span class="badge-group">гр. {{ l.groups }}</span>{% else %}—{% endif %}
+                            </td>
+                            <td>
+                                {% if l.room %}<span class="tag-room">ауд. {{ l.room.number }}</span>{% else %}—{% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="empty-placeholder">
+                                На {{ current_week }}-му тижні занять для викладача {{ selected_teacher.name }} не заплановано.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div class="empty-placeholder">
+                    <div style="font-size: 32px; margin-bottom: 10px;">👨‍🏫</div>
+                    Оберіть <b>Кафедру</b> та <b>Викладача</b> у верхньому меню, щоб переглянути індивідуальний розклад занять.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Каскадна логіка фільтрів викладача -->
+    <script>
+        const selDept = document.getElementById('select-dept');
+        const selTeacher = document.getElementById('select-teacher');
+
+        const initialDept = "{{ selected_dept|escapejs }}";
+        const initialTeacherId = "{{ selected_teacher_id|escapejs }}";
+
+        async function loadTeachers(dept) {
+            const res = await fetch(`/api/teacher-filters/?department=${encodeURIComponent(dept || '')}`);
+            return await res.json();
+        }
+
+        async function initTeacherFilters() {
+            if (initialDept) {
+                const data = await loadTeachers(initialDept);
+                selTeacher.innerHTML = '<option value="">--Викладач--</option>';
+                data.teachers.forEach(t => {
+                    selTeacher.innerHTML += `<option value="${t.id}" ${t.id == initialTeacherId ? 'selected' : ''}>${t.name}</option>`;
+                });
+                selTeacher.disabled = false;
+            }
+        }
+
+        initTeacherFilters();
+
+        selDept.addEventListener('change', async () => {
+            const dept = selDept.value;
+            selTeacher.innerHTML = '<option value="">--Викладач--</option>';
+            selTeacher.disabled = true;
+
+            if (dept) {
+                const data = await loadTeachers(dept);
+                data.teachers.forEach(t => {
+                    selTeacher.innerHTML += `<option value="${t.id}">${t.name}</option>`;
+                });
+                selTeacher.disabled = false;
+            }
+        });
+
+        selTeacher.addEventListener('change', () => {
+            const dept = selDept.value;
+            const tId = selTeacher.value;
+            if (tId) {
+                window.location.href = `/time-table/teacher/?department=${encodeURIComponent(dept)}&teacher_id=${encodeURIComponent(tId)}`;
+            }
+        });
+    </script>
+
+</body>
+</html>

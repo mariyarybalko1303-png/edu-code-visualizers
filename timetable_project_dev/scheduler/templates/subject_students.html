@@ -1,0 +1,135 @@
+﻿<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Список студентів — {{ subject.title }}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 215px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+
+        .main-content { margin-left: 235px; padding: 25px 35px; max-width: 1000px; }
+        h1 { margin: 0 0 5px 0; font-size: 22px; font-weight: 700; color: #0f172a; }
+        .subtitle { color: #64748b; font-size: 14px; margin-bottom: 20px; }
+
+        .alerts { margin-bottom: 15px; }
+        .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 8px; background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+
+        .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 24px; }
+        .form-row { display: flex; gap: 12px; align-items: flex-end; }
+        .form-group { flex: 1; }
+        .field-label { display: block; font-size: 13px; color: #475569; margin-bottom: 6px; font-weight: 600; }
+        select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 13px; background: #fff; }
+
+        button { background: #16a34a; color: #fff; border: none; font-weight: 600; cursor: pointer; padding: 9px 20px; border-radius: 6px; font-size: 14px; height: 38px; }
+        button:hover { background: #15803d; }
+        .btn-danger { background: #dc2626; }
+        .btn-danger:hover { background: #b91c1c; }
+        .back-link { display: inline-block; margin-bottom: 15px; color: #0284c7; text-decoration: none; font-weight: 600; font-size: 13px; }
+        .back-link:hover { text-decoration: underline; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #e2e8f0; padding: 10px 14px; text-align: left; font-size: 13px; }
+        th { background: #f8fafc; color: #475569; font-weight: 600; }
+        tr:hover { background: #f8fafc; }
+        .empty { text-align: center; color: #94a3b8; padding: 30px; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; height: auto; text-decoration: none; border-radius: 4px; display: inline-block; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <a href="/" class="sidebar-item">📅 Розклад</a>
+        <a href="/time-table/student/" class="sidebar-item">🎓 Розклад студента</a>
+        <a href="/time-table/teacher/" class="sidebar-item">👨‍🏫 Розклад викладача</a>
+        <a href="/time-table/selective/bachelor/" class="sidebar-item">📚 Вибіркові (Бакалаври)</a>
+        <a href="/time-table/selective/master/" class="sidebar-item">📖 Вибіркові (Магістри)</a>
+        <a href="/time-table/selective/postgraduate/" class="sidebar-item">🎓 Дисципліни (Аспіранти)</a>
+        <a href="/students/" class="sidebar-item">👨‍🎓 Студенти</a>
+        <a href="/teachers/" class="sidebar-item">👨‍🏫 Викладачі</a>
+        <a href="/import/" class="sidebar-item">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        {% if subject.level == 'bachelor' %}
+        <a href="/time-table/selective/bachelor/" class="backend-link back-link">← Повернутися до бази бакалаврів</a>
+        {% elif subject.level == 'master' %}
+        <a href="/time-table/selective/master/" class="backend-link back-link">← Повернутися до бази магістрів</a>
+        {% else %}
+        <a href="/time-table/selective/postgraduate/" class="backend-link back-link">← Повернутися до бази аспірантури</a>
+        {% endif %}
+
+        <h1>Студенти дисципліни: «{{ subject.title }}»</h1>
+        <div class="subtitle">Рівень: <b>{{ subject.get_level_display }}</b> {% if subject.specialty %} | Спеціальність: <b>{{ subject.specialty }}</b>{% endif %}</div>
+
+        {% if messages %}
+        <div class="alerts">
+            {% for message in messages %}
+                <div class="alert">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <form method="POST">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="add">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="field-label">Додати студента до дисципліни</label>
+                        <select name="student_id" required>
+                            <option value="">-- Оберіть студента --</option>
+                            {% for st in all_students %}
+                            <option value="{{ st.id }}">{{ st.full_name }} (гр. {{ st.group_name }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <button type="submit">Додати студента</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-top: 0; font-size: 16px; color: #1e293b;">Записані студенти ({{ enrolled_students.count }})</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 50px; text-align: center;">#</th>
+                        <th>ПІБ студента</th>
+                        <th>Група</th>
+                        <th>Факультет</th>
+                        <th style="width: 120px; text-align: center;">Дії</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for st in enrolled_students %}
+                    <tr>
+                        <td style="text-align: center; color: #64748b;">{{ forloop.counter }}</td>
+                        <td style="font-weight: 600; color: #0284c7;">{{ st.full_name }}</td>
+                        <td>гр. {{ st.group_name }}</td>
+                        <td>{{ st.faculty }}</td>
+                        <td style="text-align: center;">
+                            <form method="POST" style="display:inline;" onsubmit="return confirm('Видалити студента з дисципліни?');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="remove">
+                                <input type="hidden" name="student_id" value="{{ st.id }}">
+                                <button type="submit" class="btn-sm btn-danger" style="height: auto; padding: 4px 10px;">Видалити</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="empty">На цю дисципліну ще не записано жодного студента.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</body>
+</html>

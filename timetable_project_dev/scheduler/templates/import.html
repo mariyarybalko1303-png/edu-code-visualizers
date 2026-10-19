@@ -1,0 +1,86 @@
+﻿<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Імпорт розкладу</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 195px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+
+        .main-content { margin-left: 215px; padding: 25px 35px; max-width: 650px; }
+        h1 { margin: 0 0 20px 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+
+        .alerts { margin-bottom: 15px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 13px; }
+        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .field-label { display: block; font-size: 13px; color: #475569; margin-bottom: 8px; font-weight: 600; }
+        .form-group { margin-bottom: 20px; }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 13px;
+            background: #fff;
+        }
+
+        button {
+            background: #0284c7;
+            color: #fff;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 11px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        button:hover { background: #0369a1; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <a href="/" class="sidebar-item">📅 Розклад</a>
+        <a href="/time-table/student/" class="sidebar-item">🎓 Розклад студента</a>
+        <a href="/time-table/teacher/" class="sidebar-item">👨‍🏫 Розклад викладача</a>
+        <a href="/time-table/selective/bachelor/" class="sidebar-item">📚 Вибіркові (Бакалаври)</a>
+        <a href="/time-table/selective/master/" class="sidebar-item">📖 Вибіркові (Магістри)</a>
+        <a href="/time-table/selective/postgraduate/" class="sidebar-item">🎓 Дисципліни (Аспіранти)</a>
+        <a href="/students/" class="sidebar-item">👨‍🎓 Студенти</a>
+        <a href="/teachers/" class="sidebar-item">👨‍🏫 Викладачі</a>
+        <a href="/import/" class="sidebar-item active">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        <h1>Імпорт розкладу</h1>
+
+        {% if messages %}
+        <div class="alerts">
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="card">
+            <form method="POST" enctype="multipart/form-data">
+                {% csrf_token %}
+                <div class="form-group">
+                    <label class="field-label">Оберіть Excel-файл розкладу (.xlsx)</label>
+                    <input type="file" name="schedule_file" accept=".xlsx,.csv" required>
+                </div>
+                <button type="submit">Імпортувати всі дані</button>
+            </form>
+        </div>
+    </div>
+
+</body>
+</html>
