@@ -1,0 +1,357 @@
+﻿<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Управління розкладом</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+        .sidebar { position: fixed; top: 0; left: 0; width: 215px; height: 100vh; border-right: 1px solid #e2e8f0; padding-top: 20px; background: #fff; box-sizing: border-box; }
+        .sidebar-item { padding: 12px 18px; display: flex; align-items: center; gap: 8px; color: #475569; text-decoration: none; font-size: 14px; font-weight: 500; }
+        .sidebar-item:hover { background: #f1f5f9; color: #0f172a; }
+        .sidebar-item.active { background: #e0f2fe; color: #0284c7; font-weight: bold; border-left: 3px solid #0284c7; }
+
+        .main-content { margin-left: 235px; padding: 25px 35px; max-width: 1400px; }
+        h1 { margin: 0 0 20px 0; font-size: 24px; font-weight: 700; color: #0f172a; }
+
+        .alerts { margin-bottom: 15px; }
+        .alert { padding: 10px 14px; border-radius: 6px; font-size: 13px; margin-bottom: 8px; }
+        .alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        .panels-container { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+        @media (max-width: 1300px) { .panels-container { grid-template-columns: repeat(2, 1fr); } }
+
+        .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card h3 { margin-top: 0; font-size: 14px; font-weight: 600; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; }
+
+        .field-label { display: block; font-size: 11px; color: #475569; margin-bottom: 3px; font-weight: 600; }
+        .form-group { margin-bottom: 10px; }
+        input[type="text"], select { width: 100%; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; font-size: 12px; background: #fff; }
+
+        button { background: #0284c7; color: #fff; border: none; font-weight: 600; cursor: pointer; padding: 8px 14px; border-radius: 6px; font-size: 12px; width: 100%; }
+        button:hover { background: #0369a1; }
+        .btn-danger { background: #dc2626; }
+        .btn-danger:hover { background: #b91c1c; }
+
+        .week-toggle { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; justify-content: space-between; }
+        .week-link { text-decoration: none; padding: 7px 18px; border-radius: 6px; font-weight: 700; font-size: 13px; color: #fff; }
+        .btn-w1 { background: #f87171; }
+        .btn-w1.active { background: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.25); }
+        .btn-w2 { background: #4ade80; }
+        .btn-w2.active { background: #16a34a; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.25); }
+
+        table.grid-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        th, td { border: 1px solid #e2e8f0; padding: 8px; vertical-align: top; font-size: 12px; }
+        th { background: #f8fafc; color: #475569; font-weight: 600; text-align: center; }
+        
+        .lesson-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; margin-bottom: 6px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+        .lesson-card.elective { background: #f1f5f9; border-left: 4px solid #64748b; }
+        .badge-vk { background: #e2e8f0; color: #334155; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: bold; }
+        .badge-stream { background: #fef08a; color: #854d0e; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: bold; }
+        
+        .lesson-actions { position: absolute; top: 4px; right: 4px; display: flex; gap: 3px; }
+        .btn-icon { background: none; border: none; cursor: pointer; font-size: 11px; padding: 1px 3px; border-radius: 3px; text-decoration: none; color: #334155; }
+        .btn-icon:hover { background: #e2e8f0; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <a href="/" class="sidebar-item active">📅 Розклад</a>
+        <a href="/time-table/student/" class="sidebar-item">🎓 Розклад студента</a>
+        <a href="/time-table/teacher/" class="sidebar-item">👨‍🏫 Розклад викладача</a>
+        <a href="/time-table/selective/bachelor/" class="sidebar-item">📚 Вибіркові (Бакалаври)</a>
+        <a href="/time-table/selective/master/" class="sidebar-item">📖 Вибіркові (Магістри)</a>
+        <a href="/time-table/selective/postgraduate/" class="sidebar-item">🎓 Дисципліни (Аспіранти)</a>
+        <a href="/students/" class="sidebar-item">👨‍🎓 Студенти</a>
+        <a href="/teachers/" class="sidebar-item">👨‍🏫 Викладачі</a>
+        <a href="/import/" class="sidebar-item">📥 Імпорт</a>
+    </div>
+
+    <div class="main-content">
+        <h1>Управління розкладом занять</h1>
+
+        {% if messages %}
+        <div class="alerts">
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- 4 ВІКНА ПАНЕЛЕЙ КЕРУВАННЯ -->
+        <div class="panels-container">
+            <!-- 1. Довідники -->
+            <div class="card">
+                <h3>+ Довідники</h3>
+                <form method="POST" style="margin-bottom: 8px;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_teacher">
+                    <label class="field-label">ПІБ викладача</label>
+                    <input type="text" name="name" required style="margin-bottom: 4px;">
+                    <button type="submit">Додати викладача</button>
+                </form>
+                <form method="POST" style="margin-bottom: 8px;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_subject">
+                    <label class="field-label">Назва дисципліни</label>
+                    <input type="text" name="title" required style="margin-bottom: 4px;">
+                    <button type="submit">Додати дисципліну</button>
+                </form>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_room">
+                    <label class="field-label">Номер аудиторії</label>
+                    <input type="text" name="number" required style="margin-bottom: 4px;">
+                    <button type="submit">Додати аудиторію</button>
+                </form>
+            </div>
+
+            <!-- 2. Призначити пару вручну -->
+            <div class="card">
+                <h3>{% if editing_item %}✏️ Редагувати пару{% else %}+ Призначити пару{% endif %}</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="{% if editing_item %}edit_lesson{% else %}manual_assign{% endif %}">
+                    {% if editing_item %}
+                    <input type="hidden" name="item_id" value="{{ editing_item.id }}">
+                    {% endif %}
+
+                    <div class="form-group">
+                        <label class="field-label">День тижня</label>
+                        <select name="day">
+                            {% for d_en, d_ua in days_order %}
+                            <option value="{{ d_en }}" {% if editing_item and editing_item.day == d_en %}selected{% endif %}>{{ d_ua }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Пара</label>
+                        <select name="period">
+                            {% for p in periods %}
+                            <option value="{{ p }}" {% if editing_item and editing_item.period == p %}selected{% endif %}>{{ p }} пара</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Дисципліна</label>
+                        <select name="subject_id">
+                            {% for s in subjects %}
+                            <option value="{{ s.id }}" {% if editing_item and editing_item.subject_id == s.id %}selected{% endif %}>{{ s.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id">
+                            {% for t in teachers %}
+                            <option value="{{ t.id }}" {% if editing_item and editing_item.teacher_id == t.id %}selected{% endif %}>{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Аудиторія</label>
+                        <select name="room_id">
+                            <option value="">-- Без аудиторії --</option>
+                            {% for r in rooms %}
+                            <option value="{{ r.id }}" {% if editing_item and editing_item.room_id == r.id %}selected{% endif %}>{{ r.number }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Групи (через кому)</label>
+                        <input type="text" name="groups" value="{% if editing_item %}{{ editing_item.groups }}{% endif %}" placeholder="314-і, 315і">
+                    </div>
+
+                    <div class="form-group" style="display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" name="is_stream" id="is_stream" {% if editing_item and editing_item.is_stream %}checked{% endif %}>
+                        <label for="is_stream" style="font-size: 12px; font-weight: 500;">Потокове</label>
+                    </div>
+
+                    <button type="submit">{% if editing_item %}Зберегти{% else %}Записати{% endif %}</button>
+                    {% if editing_item %}
+                    <a href="/?week={{ current_week }}" style="display: block; text-align: center; margin-top: 6px; font-size: 11px; color: #64748b; text-decoration: none;">Скасувати</a>
+                    {% endif %}
+                </form>
+            </div>
+
+            <!-- 3. Зайнятість викладачів -->
+            <div class="card">
+                <h3>Зайнятість викладачів</h3>
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="save_unavailability">
+                    {% if editing_unavail %}
+                    <input type="hidden" name="unavail_id" value="{{ editing_unavail.id }}">
+                    {% endif %}
+
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id" required>
+                            {% for t in teachers %}
+                            <option value="{{ t.id }}" {% if editing_unavail and editing_unavail.teacher_id == t.id %}selected{% endif %}>{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">День тижня</label>
+                        <select name="day">
+                            {% for d_en, d_ua in days_order %}
+                            <option value="{{ d_en }}" {% if editing_unavail and editing_unavail.day == d_en %}selected{% endif %}>{{ d_ua }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-label">Пара</label>
+                        <select name="period">
+                            <option value="0">Увесь день</option>
+                            {% for p in periods %}
+                            <option value="{{ p }}" {% if editing_unavail and editing_unavail.period == p %}selected{% endif %}>{{ p }} пара</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <button type="submit" style="background: #e11d48; margin-top: 5px;">Зафіксувати</button>
+                </form>
+            </div>
+
+            <!-- 4. Рушій (Потоки + CSP) -->
+            <div class="card">
+                <h3>Рушій (Потоки + CSP)</h3>
+                <form method="POST" style="margin-bottom: 10px;">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="add_requirement">
+                    <div class="form-group">
+                        <label class="field-label">Викладач</label>
+                        <select name="teacher_id">
+                            {% for t in teachers %}
+                            <option value="{{ t.id }}">{{ t.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="field-label">Дисципліна</label>
+                        <select name="subject_id">
+                            {% for s in subjects %}
+                            <option value="{{ s.id }}">{{ s.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="field-label">Групи</label>
+                        <input type="text" name="groups" placeholder="314-і">
+                    </div>
+                    <div class="form-group" style="display: flex; gap: 10px; align-items: center;">
+                        <input type="checkbox" name="is_stream" id="req_stream">
+                        <label for="req_stream" style="font-size: 11px;">Потік</label>
+                        <input type="text" name="hours" value="1" placeholder="Години" style="width: 50px;">
+                    </div>
+                    <button type="submit" style="background: #7c3aed; padding: 6px;">+ Вимога</button>
+                </form>
+
+                <form method="POST">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="auto_generate">
+                    <button type="submit" style="background: #9333ea;">Розставити (CSP)</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Перемикач тижнів та фільтр груп -->
+        <div class="card" style="margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+            <div class="week-toggle" style="margin-bottom: 0;">
+                <a href="?week=1{% if selected_group_filter %}&filter_group={{ selected_group_filter }}{% endif %}" class="week-link btn-w1 {% if current_week == 1 %}active{% endif %}">1 тиждень</a>
+                <a href="?week=2{% if selected_group_filter %}&filter_group={{ selected_group_filter }}{% endif %}" class="week-link btn-w2 {% if current_week == 2 %}active{% endif %}">2 тиждень</a>
+            </div>
+
+            <form method="GET" style="display: flex; align-items: center; gap: 10px; margin-bottom: 0;">
+                <input type="hidden" name="week" value="{{ current_week }}">
+                <label style="font-size: 13px; font-weight: 600; color: #475569;">Група:</label>
+                <select name="filter_group" onchange="this.form.submit()" style="max-width: 220px;">
+                    <option value="">Усі групи</option>
+                    {% for g in all_groups_list %}
+                    <option value="{{ g }}" {% if selected_group_filter == g %}selected{% endif %}>{{ g }}</option>
+                    {% endfor %}
+                </select>
+                {% if selected_group_filter %}
+                <a href="/?week={{ current_week }}&filter_group=" style="background: #64748b; color: #fff; padding: 8px 12px; border-radius: 6px; text-decoration: none; font-size: 12px; font-weight: 600;">Скинути</a>
+                {% endif %}
+            </form>
+
+            <div>
+                <a href="/export/?week={{ current_week }}" style="background: #16a34a; color: #fff; padding: 9px 18px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 13px; display: inline-block;">📥 Завантажити Excel</a>
+            </div>
+        </div>
+
+        <!-- Сітка розкладу з кнопками редагування та видалення -->
+        <table class="grid-table">
+            <thead>
+                <tr>
+                    <th style="width: 90px;">Пара</th>
+                    {% for d_en, d_ua in days_order %}
+                    <th>{{ d_ua }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in periods %}
+                <tr>
+                    <td style="text-align: center; font-weight: bold; background: #f8fafc; color: #334155; vertical-align: middle;">
+                        {{ p }} пара
+                    </td>
+                    {% for d_en, d_ua in days_order %}
+                    <td>
+                        {% if d_en == "Monday" and p == 8 %}
+                            <div style="text-align: center; color: #94a3b8; padding: 15px;">—</div>
+                        {% else %}
+                            {% with slot_lessons=grid|default_if_none:"" %}
+                                {% for day_key, lessons in grid.items %}
+                                    {% if day_key == p %}
+                                        {% for d_name, d_items in lessons.items %}
+                                            {% if d_name == d_en %}
+                                                {% for item in d_items %}
+                                                <div class="lesson-card {% if item.subject.is_elective %}elective{% endif %}">
+                                                    <div class="lesson-actions">
+                                                        <a href="/?week={{ current_week }}&edit_item={{ item.id }}" title="Редагувати" class="btn-icon">✏️</a>
+                                                        <form method="POST" style="display:inline;" onsubmit="return confirm('Видалити цю пару з розкладу?');">
+                                                            {% csrf_token %}
+                                                            <input type="hidden" name="action" value="delete_lesson">
+                                                            <input type="hidden" name="item_id" value="{{ item.id }}">
+                                                            <button type="submit" title="Видалити" class="btn-icon" style="color:#dc2626; cursor:pointer;">❌</button>
+                                                        </form>
+                                                    </div>
+                                                    
+                                                    <div style="font-size: 10px; margin-bottom: 2px;">
+                                                        {% if item.subject.is_elective %}<span class="badge-vk">ВК</span>{% endif %}
+                                                        {% if item.is_stream %}<span class="badge-stream">ПОТІК</span>{% endif %}
+                                                    </div>
+                                                    <div style="font-weight: 600; color: #0284c7; margin-bottom: 2px; font-size: 12px;">{{ item.subject.title }}</div>
+                                                    <div style="color: #334155; font-size: 11px;">{{ item.teacher.name }}{% if item.room %} <span style="color: #64748b;">(ауд. {{ item.room.number }})</span>{% endif %}</div>
+                                                    <div style="font-size: 10px; color: #64748b; margin-top: 3px; font-weight: 500;">гр. {{ item.groups }}</div>
+                                                </div>
+                                                {% empty %}
+                                                <div style="text-align: center; color: #cbd5e1; padding: 10px; font-size: 11px;">Вікно</div>
+                                                {% endfor %}
+                                            {% endif %}
+                                        {% endfor %}
+                                    {% endif %}
+                                {% endfor %}
+                            {% endwith %}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</body>
+</html>
