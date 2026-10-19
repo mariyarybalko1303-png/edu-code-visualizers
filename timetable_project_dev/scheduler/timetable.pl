@@ -1,40 +1,58 @@
-﻿:- use_module(library(clpfd)).
+:- use_module(library(clpfd)).
 
-% Головний предикат: розв'язання задачі розкладу
-% Task формати: task(ID, TeacherID, GroupID, RoomID, Day, Period)
-solve_timetable(Tasks) :-
-    extract_vars(Tasks, Days, Periods),
+% Формат завдання у Prolog:
+% task(TaskID, TeacherID, RoomID, IsStream, DayVar, PeriodVar, GroupsList)
+solve_timetable([], _).
+solve_timetable(Tasks, AllVars) :-
+    extract_days_periods(Tasks, Days, Periods),
     
-    % Домени днів (1..5 — понеділок-п'ятниця) та пар (1..7)
+    % Домени: Дні (1..5 — понеділок-п'ятниця), Пари (1..7)
     Days ins 1..5,
     Periods ins 1..7,
     
-    % Застосування обмежень (немає колізій)
-    all_valid_constraints(Tasks),
+    % Перевірка всіх обмежень та колізій
+    check_all_constraints(Tasks),
     
-    % Пошук рішення (labeling)
-    append(Days, Periods, Vars),
-    labeling([ff], Vars).
+    % Пошук рішення через labeling з евристикою ff (first fail)
+    append(Days, Periods, AllVars),
+    labeling([ff, asc], AllVars).
 
-extract_vars([], [], []).
-extract_vars([task(_, _, _, _, D, P) | Rest], [D | Days], [P | Periods]) :-
-    extract_vars(Rest, Days, Periods).
+extract_days_periods([], [], []).
+extract_days_periods([task(_, _, _, _, D, P, _) | Rest], [D | Days], [P | Periods]) :-
+    extract_days_periods(Rest, Days, Periods).
 
-% Перевірка відсутності колізій між усіма парами завдань
-all_valid_constraints([]).
-all_valid_constraints([Task | Rest]) :-
-    check_no_collisions(Task, Rest),
-    all_valid_constraints(Rest).
+check_all_constraints([]).
+check_all_constraints([Task | Rest]) :-
+    no_collisions_with_rest(Task, Rest),
+    check_all_constraints(Rest).
 
-check_no_collisions(_, []).
-check_no_collisions(task(ID1, T1, G1, R1, D1, P1), [task(ID2, T2, G2, R2, D2, P2) | Rest]) :-
+no_collisions_with_rest(_, []).
+no_collisions_with_rest(task(ID1, T1, R1, Stream1, D1, P1, G1), [task(ID2, T2, R2, Stream2, D2, P2, G2) | Rest]) :-
     ID1 \= ID2,
-    % Якщо день і пара однакові — ресурси не повинні перетинатися
+    % Якщо день і пара збігаються, перевіряємо ресурси
     (   (D1 #= D2, P1 #= P2) #=> 
         (
-          T1 #\= T2,  % Один викладач не може вести дві пари одночасно
-          R1 #\= R2,  % Одна аудиторія не може бути зайнята різними парами
-          G1 #\= G2   % Група не може мати дві пари одночасно
+          % 1. Викладач не може бути в двох місцях одночасно
+          T1 #\= T2,
+          
+          % 2. Аудиторія не може бути зайнята різними парами
+          R1 #\= R2,
+          
+          % 3. Перевірка груп та потоків
+          groups_compatible(Stream1, G1, Stream2, G2)
         )
     ),
-    check_no_collisions(task(ID1, T1, G1, R1, D1, P1), Rest).
+    no_collisions_with_rest(task(ID1, T1, R1, Stream1, D1, P1, G1), Rest).
+
+% Правила сумісності груп:
+% Якщо обидва заняття є тотожним потоком (однакові групи), вони можуть йти разом.
+% В іншому випадку групи не повинні перетинатися в один і той же час.
+groups_compatible(1, G1, 1, G2) :-
+    G1 == G2.  % Однаковий спільний потік — дозволено
+groups_compatible(_, G1, _, G2) :-
+    intersection_empty(G1, G2). % Жодної спільної групи у непотокових заняттях
+
+intersection_empty([], _).
+intersection_empty([H | T], L2) :-
+    \+ member(H, L2),
+    intersection_empty(T, L2).
