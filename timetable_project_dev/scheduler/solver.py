@@ -1,11 +1,11 @@
-﻿import subprocess
+import subprocess
 import os
 import tempfile
 
 class TimetableCSPSolver:
     """
-    Гібридний солвер: використовує чистий Prolog (SWI-Prolog CLP(FD)) 
-    як логічний движок для пошуку розкладу без колізій.
+    Гібридний солвер: використовує чистий Prolog (SWI-Prolog CLP(FD))
+    для автоматичного пошуку розкладу без колізій з урахуванням потоків та груп.
     """
     def __init__(self, week, teachers, subjects, rooms, requirements, unavailabilities):
         self.week = week
@@ -16,21 +16,27 @@ class TimetableCSPSolver:
         self.unavailabilities = list(unavailabilities)
 
     def solve(self):
-        # 1. Формуємо завдання (tasks) для Prolog
         tasks_prolog = []
-        task_id = 1
-        
         tasks_mapping = []
+        task_id = 1
+
+        # Формуємо список завдань із вимог навантаження
         for req in self.requirements:
-            for i in range(req.hours_per_week):
-                # Для кожного заняття створюємо унікальний ідентифікатор
+            for _ in range(req.hours_per_week):
                 t_id = f"t{task_id}"
-                # Умовно мапимо ID викладача, групи (першої) та аудиторії на числа для Prolog
                 t_code = req.teacher.id
-                g_code = hash(req.groups) % 1000
-                r_code = self.rooms[0].id if self.rooms else 1
                 
-                tasks_prolog.append(f"task({t_id}, {t_code}, {g_code}, {r_code}, D{task_id}, P{task_id})")
+                # Призначаємо кімнату за замовчуванням або першу вільну
+                r_code = self.rooms[(task_id - 1) % len(self.rooms)].id if self.rooms else 1
+                
+                # Ознака потоку (1 якщо потокове, 0 якщо ні)
+                is_stream_val = 1 if req.is_stream else 0
+                
+                # Список груп у вигляді Prolog-списку, напр: [g1, g2]
+                groups_raw = [g.strip().lower() for g in req.groups.split(',') if g.strip()]
+                groups_prolog = "[" + ", ".join([f"g_{hash(g) % 10000}" for g in groups_raw]) + "]"
+
+                tasks_prolog.append(f"task({t_id}, {t_code}, {r_code}, {is_stream_val}, D{task_id}, P{task_id}, {groups_prolog})")
                 tasks_mapping.append({
                     'req': req,
                     'day_var': f"D{task_id}",
@@ -41,62 +47,57 @@ class TimetableCSPSolver:
         if not tasks_prolog:
             return []
 
-        # 2. Створюємо тимчасовий файл запиту Prolog
         pl_file_path = os.path.abspath("scheduler/timetable.pl")
         
+        # Запит до Prolog рушія
         query_content = f"""
-        :- consult('{pl_file_path.replace(os.sep, "/").absolute() if hasattr(pl_file_path, 'absolute') else pl_file_path}').
+        :- consult('{pl_file_path.replace(os.sep, "/") if os.name == 'nt' else pl_file_path}').
         
-        run_query(ListOfVars) :-
+        run_query(AllVars) :-
             Tasks = [{', '.join(tasks_prolog)}],
-            solve_timetable(Tasks),
-            ListOfVars = [{', '.join([f"D{i+1}-P{i+1}" for i in range(len(tasks_mapping))])}].
+            solve_timetable(Tasks, AllVars).
         """
-        
-        # Записуємо у тимчасовий файл
+
         fd, temp_query_path = tempfile.mkstemp(suffix='.pl', text=True)
         os.close(fd)
         with open(temp_query_path, 'w', encoding='utf-8') as f:
             f.write(query_content)
 
-        # 3. Викликаємо SWI-Prolog (swipl) з Python
         days_map = {1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday"}
         assigned_schedule = []
 
         try:
-            # Виконуємо запит через командний рядок SWI-Prolog
-            cmd = ["swipl", "-s", temp_query_path, "-g", "run_query(Res), writeln(Res), halt.", "-t", "halt"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            
+            # Запускаємо SWI-Prolog (swipl)
+            cmd = ["swipl", "-s", temp_query_path, "-g", "run_query(Vars), writeln(Vars), halt.", "-t", "halt"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
             if result.returncode != 0 or not result.stdout.strip():
-                # Якщо Prolog не знайшов рішення або сталася помилка
-                os.remove(temp_query_path)
+                if os.path.exists(temp_query_path):
+                    os.remove(temp_query_path)
+                return None  # Prolog не знайшов розв'язку без колізій
+
+            output = result.stdout.strip().strip("[]")
+            if not output:
+                if os.path.exists(temp_query_path):
+                    os.remove(temp_query_path)
                 return None
 
-            output = result.stdout.strip()
-            # Приклад виводу від Prolog: [1-3, 2-4, 5-1, ...]
-            clean_out = output.strip("[]")
-            if not clean_out:
-                os.remove(temp_query_path)
-                return None
-
-            pairs = clean_out.split(",")
+            # Розбираємо змінні, знайдені Prolog [D1, D2, ..., P1, P2, ...]
+            raw_vals = [int(v.strip()) for v in output.split(",") if v.strip().isdigit()]
             
-            room_counter = 0
-            for idx, item_data in enumerate(pairs):
-                if "-" not in item_data:
-                    continue
-                d_str, p_str = item_data.strip().split("-")
-                day_num = int(d_str.strip())
-                period_num = int(p_str.strip())
-                
+            num_tasks = len(tasks_mapping)
+            days_vals = raw_vals[:num_tasks]
+            periods_vals = raw_vals[num_tasks:num_tasks * 2]
+
+            room_idx = 0
+            for idx, mapping in enumerate(tasks_mapping):
+                req = mapping['req']
+                day_num = days_vals[idx] if idx < len(days_vals) else 1
+                period_num = periods_vals[idx] if idx < len(periods_vals) else 1
+
                 day_name = days_map.get(day_num, "Monday")
-                mapping_info = tasks_mapping[idx]
-                req = mapping_info['req']
-                
-                # Підбираємо аудиторію
-                room = self.rooms[room_counter % len(self.rooms)] if self.rooms else None
-                room_counter += 1
+                room = self.rooms[room_idx % len(self.rooms)] if self.rooms else None
+                room_idx += 1
 
                 assigned_schedule.append({
                     'week': self.week,
@@ -110,7 +111,7 @@ class TimetableCSPSolver:
                 })
 
         except Exception as e:
-            print(f"Prolog execution error: {e}")
+            print(f"Prolog Execution Error: {e}")
             assigned_schedule = None
         finally:
             if os.path.exists(temp_query_path):
