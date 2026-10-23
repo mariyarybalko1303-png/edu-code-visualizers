@@ -441,7 +441,8 @@ class CodeRunner(QThread):
 
         self.meta_info = {
             "has_loops": False,
-            "classes": {}
+            "classes": {},
+            "relations": []
         }
 
     def pause(self):
@@ -454,6 +455,9 @@ class CodeRunner(QThread):
         self.running = False
 
     def _analyze_and_instrument(self, tree: ast.AST) -> ast.AST:
+        class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+        known_classes = {c.name for c in class_nodes}
+
         for node in ast.walk(tree):
             if isinstance(node, (ast.For, ast.While)):
                 self.meta_info["has_loops"] = True
@@ -463,6 +467,25 @@ class CodeRunner(QThread):
                     if isinstance(node.bases[0], ast.Name):
                         base_name = node.bases[0].id
                 self.meta_info["classes"][node.name] = base_name
+
+                # Виявлення агрегації/композиції через виклики та анотації інших класів
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                        called = sub.func.id
+                        if called in known_classes and called != node.name:
+                            rel = {"type": "aggregation", "from": node.name, "to": called}
+                            if rel not in self.meta_info["relations"]:
+                                self.meta_info["relations"].append(rel)
+                    elif isinstance(sub, ast.AnnAssign):
+                        type_name = ""
+                        if isinstance(sub.annotation, ast.Name):
+                            type_name = sub.annotation.id
+                        elif isinstance(sub.annotation, ast.Subscript) and isinstance(sub.annotation.slice, ast.Name):
+                            type_name = sub.annotation.slice.id
+                        if type_name in known_classes and type_name != node.name:
+                            rel = {"type": "aggregation", "from": node.name, "to": type_name}
+                            if rel not in self.meta_info["relations"]:
+                                self.meta_info["relations"].append(rel)
 
         class UniversalStepInjector(ast.NodeTransformer):
             def _create_step_call(self):
@@ -613,6 +636,57 @@ class AdaptiveAnimationWidget(QWidget):
         arrow_head.setPen(QPen(QColor(color)))
         self.scene.addItem(arrow_head)
 
+    def _get_rect_intersection(self, rx, ry, rw, rh, target_x, target_y):
+        cx = rx + rw / 2.0
+        cy = ry + rh / 2.0
+        dx = target_x - cx
+        dy = target_y - cy
+
+        if abs(dx) < 1e-5 and abs(dy) < 1e-5:
+            return QPointF(cx, cy)
+
+        hw = rw / 2.0
+        hh = rh / 2.0
+        scale_x = hw / abs(dx) if abs(dx) > 1e-5 else float('inf')
+        scale_y = hh / abs(dy) if abs(dy) > 1e-5 else float('inf')
+        scale = min(scale_x, scale_y)
+        return QPointF(cx + dx * scale, cy + dy * scale)
+
+    def _draw_aggregation_between_rects(self, r1_coords, r2_coords, color="#DD6B20", width=2):
+        r1_x, r1_y, r1_w, r1_h = r1_coords
+        r2_x, r2_y, r2_w, r2_h = r2_coords
+
+        c2_x = r2_x + r2_w / 2.0
+        c2_y = r2_y + r2_h / 2.0
+        c1_x = r1_x + r1_w / 2.0
+        c1_y = r1_y + r1_h / 2.0
+
+        p1 = self._get_rect_intersection(r1_x, r1_y, r1_w, r1_h, c2_x, c2_y)
+        p2 = self._get_rect_intersection(r2_x, r2_y, r2_w, r2_h, c1_x, c1_y)
+
+        x1, y1 = p1.x(), p1.y()
+        x2, y2 = p2.x(), p2.y()
+
+        pen = QPen(QColor(color), width, Qt.PenStyle.DashLine)
+        self.scene.addLine(x1, y1, x2, y2, pen)
+
+        angle = math.atan2(y2 - y1, x2 - x1)
+        diamond_len = 12
+        diamond_w = 6
+
+        p_start = QPointF(x1, y1)
+        p_side1 = QPointF(x1 + diamond_len/2 * math.cos(angle) - diamond_w * math.sin(angle),
+                          y1 + diamond_len/2 * math.sin(angle) + diamond_w * math.cos(angle))
+        p_far = QPointF(x1 + diamond_len * math.cos(angle),
+                        y1 + diamond_len * math.sin(angle))
+        p_side2 = QPointF(x1 + diamond_len/2 * math.cos(angle) + diamond_w * math.sin(angle),
+                          y1 + diamond_len/2 * math.sin(angle) - diamond_w * math.cos(angle))
+
+        diamond = QGraphicsPolygonItem(QPolygonF([p_start, p_side1, p_far, p_side2]))
+        diamond.setBrush(QBrush(QColor("#FFFFFF")))
+        diamond.setPen(QPen(QColor(color), 1.8))
+        self.scene.addItem(diamond)
+
     def _draw_diamond(self, cx, cy, w, h, text_str, bg_color="#FEFCBF", border_color="#B7791F"):
         p_top = QPointF(cx, cy - h / 2)
         p_right = QPointF(cx + w / 2, cy)
@@ -648,7 +722,7 @@ class AdaptiveAnimationWidget(QWidget):
         text.setPos(x + w / 2 - text.boundingRect().width() / 2, y + h / 2 - text.boundingRect().height() / 2)
         self.scene.addItem(text)
 
-    def _draw_class_tree(self, classes_dict: dict, start_y: int, cx: int):
+    def _draw_class_tree(self, classes_dict: dict, relations: list, start_y: int, cx: int):
         tree = {}
         for child, parent in classes_dict.items():
             tree.setdefault(parent, []).append(child)
@@ -659,6 +733,7 @@ class AdaptiveAnimationWidget(QWidget):
 
         box_w, box_h = 130, 42
         level_gap = 55
+        rect_map = {}
 
         # Рівень 0: Object
         root_name = "Object"
@@ -667,6 +742,8 @@ class AdaptiveAnimationWidget(QWidget):
         obj_rect.setBrush(QBrush(QColor("#FFFFFF")))
         obj_rect.setPen(QPen(QColor("#000000"), 1.8))
         self.scene.addItem(obj_rect)
+        rect_map["object"] = (obj_x, start_y, box_w, box_h)
+        rect_map["Object"] = (obj_x, start_y, box_w, box_h)
 
         t_obj = QGraphicsTextItem(root_name)
         t_obj.setDefaultTextColor(QColor("#000000"))
@@ -688,6 +765,7 @@ class AdaptiveAnimationWidget(QWidget):
         base_rect.setBrush(QBrush(QColor("#FFFFFF")))
         base_rect.setPen(QPen(QColor("#000000"), 1.8))
         self.scene.addItem(base_rect)
+        rect_map[base_name] = (base_x, y_lvl1, box_w, box_h)
 
         t_base = QGraphicsTextItem(base_name)
         t_base.setDefaultTextColor(QColor("#800000"))
@@ -700,8 +778,8 @@ class AdaptiveAnimationWidget(QWidget):
         if not subclasses:
             subclasses = [cls for cls in classes_dict.keys() if cls != base_name]
 
+        y_lvl2 = y_lvl1 + box_h + level_gap
         if subclasses:
-            y_lvl2 = y_lvl1 + box_h + level_gap
             num_subs = len(subclasses)
             gap = 25
             total_w = num_subs * box_w + (num_subs - 1) * gap
@@ -724,12 +802,44 @@ class AdaptiveAnimationWidget(QWidget):
                 sub_rect.setBrush(QBrush(QColor("#FFFFFF")))
                 sub_rect.setPen(QPen(QColor("#000000"), 1.8))
                 self.scene.addItem(sub_rect)
+                rect_map[sub_name] = (sub_x, y_lvl2, box_w, box_h)
 
                 t_sub = QGraphicsTextItem(sub_name)
                 t_sub.setDefaultTextColor(QColor("#000000"))
                 t_sub.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
                 t_sub.setPos(sub_x + (box_w - t_sub.boundingRect().width()) / 2, y_lvl2 + 8)
                 self.scene.addItem(t_sub)
+
+        # Відображення зв'язків агрегації/композиції між контурами прямокутників
+        for rel in relations:
+            src = rel.get("from")
+            dst = rel.get("to")
+            if src in rect_map and dst in rect_map:
+                self._draw_aggregation_between_rects(rect_map[src], rect_map[dst], color="#DD6B20", width=2)
+
+        # Легенда ООП (Успадкування та Агрегація)
+        leg_y = (y_lvl2 if subclasses else y_lvl1) + box_h + 30
+        leg_rect = QGraphicsRectItem(cx - 180, leg_y, 360, 40)
+        leg_rect.setBrush(QBrush(QColor("#F7FAFC")))
+        leg_rect.setPen(QPen(QColor("#CBD5E0"), 1))
+        self.scene.addItem(leg_rect)
+
+        self.scene.addLine(cx - 165, leg_y + 20, cx - 130, leg_y + 20, QPen(QColor("#000000"), 1.8))
+        t_leg1 = QGraphicsTextItem("Успадкування (is-a)")
+        t_leg1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        t_leg1.setDefaultTextColor(QColor("#000000"))
+        t_leg1.setPos(cx - 125, leg_y + 11)
+        self.scene.addItem(t_leg1)
+
+        sample_r1 = (cx + 10, leg_y + 12, 16, 16)
+        sample_r2 = (cx + 45, leg_y + 12, 16, 16)
+        self._draw_aggregation_between_rects(sample_r1, sample_r2, color="#DD6B20", width=2)
+
+        t_leg2 = QGraphicsTextItem("Агрегація (has-a)")
+        t_leg2.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        t_leg2.setDefaultTextColor(QColor("#DD6B20"))
+        t_leg2.setPos(cx + 65, leg_y + 11)
+        self.scene.addItem(t_leg2)
 
     def update_variables(self, variables: dict, meta_info: dict):
         self.scene.clear()
@@ -804,7 +914,7 @@ class AdaptiveAnimationWidget(QWidget):
             title.setPos(cx - title.boundingRect().width() / 2, y - 10)
             self.scene.addItem(title)
 
-            self._draw_class_tree(meta_info["classes"], y + 20, cx)
+            self._draw_class_tree(meta_info["classes"], meta_info.get("relations", []), y + 20, cx)
 
         elif has_loops:
             # --- РЕЖИМ 2: БЛОК-СХЕМА ЦИКЛУ З ОПИСАМИ ЧАСТИН ---
@@ -820,7 +930,7 @@ class AdaptiveAnimationWidget(QWidget):
             list_obj = next((v for v in variables.values() if isinstance(v, list)), None)
             limit_val = len(list_obj) if list_obj is not None else 5
 
-            # 1. Початок циклу (Ініціалізація)[cite: 4]
+            # 1. Початок циклу (Ініціалізація)
             b1_w, b1_h = 180, 40
             b1_x = cx - b1_w / 2
             rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
@@ -834,60 +944,55 @@ class AdaptiveAnimationWidget(QWidget):
             t1.setPos(b1_x + 15, y + 8)
             self.scene.addItem(t1)
 
-            # Опис блоку 1
             desc1 = QGraphicsTextItem("◀ Вхід / Ініціалізація лічильника")
             desc1.setDefaultTextColor(QColor("#4A5568"))
             desc1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc1.setPos(b1_x + b1_w + 10, y + 10)
             self.scene.addItem(desc1)
 
-            # Стрілка вниз до ромба[cite: 4]
             self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
 
-            # 2. Ромб умови циклу[cite: 4]
+            # 2. Ромб умови циклу
             d_cy = y + b1_h + 30 + 35
             d_w, d_h = 150, 70
             self._draw_diamond(cx, d_cy, d_w, d_h, f"{loop_var} < {limit_val} ?")
 
-            # Опис ромба
             desc_diamond = QGraphicsTextItem("◀ Умова продовження циклу")
             desc_diamond.setDefaultTextColor(QColor("#4A5568"))
             desc_diamond.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc_diamond.setPos(cx + d_w / 2 + 10, d_cy - 35)
             self.scene.addItem(desc_diamond)
 
-            # --- ГІЛКА «ТАК (True)» ВНИЗ[cite: 4] ---
+            # ГІЛКА «ТАК (True)» ВНИЗ
             lbl_yes = QGraphicsTextItem("Так (True)")
             lbl_yes.setDefaultTextColor(QColor("#000000"))
             lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             lbl_yes.setPos(cx + 6, d_cy + d_h / 2 + 4)
             self.scene.addItem(lbl_yes)
 
-            # --- ГІЛКА «НІ (False)» ПРАВОРУЧ ---
+            # ГІЛКА «НІ (False)» ПРАВОРУЧ
             lbl_no = QGraphicsTextItem("Ні (False)")
             lbl_no.setDefaultTextColor(QColor("#000000"))
             lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             lbl_no.setPos(cx + d_w / 2 + 8, d_cy - 24)
             self.scene.addItem(lbl_no)
 
-            # Горизонтальна лінія без стрілки вкінці + стрілка вниз до виходу
             exit_x = cx + d_w / 2 + 110
             self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#000000"), 2))
             self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25)
             self._draw_parallelogram(exit_x - 65, d_cy + 25, 140, 40, "Вихід з циклу")
 
-            # Опис паралелограма
             desc_exit = QGraphicsTextItem("◀ Завершення ітерацій")
             desc_exit.setDefaultTextColor(QColor("#4A5568"))
             desc_exit.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc_exit.setPos(exit_x + 80, d_cy + 35)
             self.scene.addItem(desc_exit)
 
-            # Стрілка вниз від ромба -> Тіло циклу[cite: 4]
+            # Стрілка вниз від ромба -> Тіло циклу
             body_y = d_cy + d_h / 2 + 35
             self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y)
 
-            # Блок 3: Тіло циклу (Поточний крок)[cite: 4]
+            # Блок 3: Тіло циклу
             b3_w, b3_h = 180, 40
             b3_x = cx - b3_w / 2
             rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
@@ -901,17 +1006,15 @@ class AdaptiveAnimationWidget(QWidget):
             t3.setPos(b3_x + 18, body_y + 8)
             self.scene.addItem(t3)
 
-            # Опис блоку 3
             desc3 = QGraphicsTextItem("◀ Тіло циклу (дія на поточному кроці)")
             desc3.setDefaultTextColor(QColor("#4A5568"))
             desc3.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc3.setPos(b3_x + b3_w + 10, body_y + 10)
             self.scene.addItem(desc3)
 
-            # Стрілка вниз до блоку стану[cite: 4]
             self._draw_arrow(cx, body_y + b3_h, cx, body_y + b3_h + 25)
 
-            # Блок 4: Стан та значення[cite: 4]
+            # Блок 4: Стан та значення
             b4_y = body_y + b3_h + 25
             b4_w, b4_h = 240, 42
             b4_x = cx - b4_w / 2
@@ -928,14 +1031,13 @@ class AdaptiveAnimationWidget(QWidget):
             t4.setPos(b4_x + 10, b4_y + 9)
             self.scene.addItem(t4)
 
-            # Опис блоку 4
             desc4 = QGraphicsTextItem("◀ Поточні значення змінних")
             desc4.setDefaultTextColor(QColor("#4A5568"))
             desc4.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc4.setPos(b4_x + b4_w + 10, b4_y + 11)
             self.scene.addItem(desc4)
 
-            # Зворотна петля циклу (вліво, вгору та назад у ромб)[cite: 4]
+            # Зворотна петля циклу
             loop_left_x = cx - 150
             pen_loop = QPen(QColor("#000000"), 2)
             self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
@@ -943,7 +1045,6 @@ class AdaptiveAnimationWidget(QWidget):
             self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
             self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
 
-            # Опис петлі
             desc_loop = QGraphicsTextItem("Наступна ітерація\n(повернення в умову) ▶")
             desc_loop.setDefaultTextColor(QColor("#4A5568"))
             desc_loop.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
@@ -951,7 +1052,7 @@ class AdaptiveAnimationWidget(QWidget):
             self.scene.addItem(desc_loop)
 
         else:
-            # --- РЕЖИМ 3: ЗВИЧАЙНИЙ СТЕК ЗМІННИХ[cite: 4] ---
+            # --- РЕЖИМ 3: ЗВИЧАЙНИЙ СТЕК ЗМІННИХ ---
             prev_center = None
             var_w, var_h = 140, 42
             spacing = 35
@@ -1084,8 +1185,6 @@ class MainWindow(QMainWindow):
         self.resume_button.clicked.connect(self.resume_code)
 
         self.apply_mdpu_theme()
-
-        
 
     def init_menus(self):
         file_menu = self.menuBar().addMenu("📂 Файл")
