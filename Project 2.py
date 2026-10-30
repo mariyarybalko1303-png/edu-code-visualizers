@@ -215,10 +215,10 @@ class AdaptiveAnimationWidget(QWidget):
 class CppUniversalEngine:
     """
     Універсальний симулятор коду C++:
-    - Звичайні фіксовані масиви
-    - Динамічні масиви (new[], delete[], вказівники та їх переприсвоєння)
+    - Бібліотека <array>: std::array<T, N> (fill, at, front, back, swap)
+    - Статичні та динамічні масиви (new[], delete[], вказівники)
     - Вектори std::vector (push_back, pop_back, insert, erase, resize, clear)
-    - Цикли for та арифметичні вирази
+    - Цикли for та довільні арифметичні вирази
     """
     def __init__(self):
         self.variables = {}
@@ -244,16 +244,23 @@ class CppUniversalEngine:
         if not expr:
             return 0
 
-        # Нормалізація вказівникової арифметики *(arr + i) -> arr[i]
+        # Обробка вказівникової арифметики *(arr + i)
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        expr = re.sub(r"\brand\s*\(\s*\)", str(random.randint(0, 32767)), expr)
-        expr = re.sub(r"\b\w*dist\w*\s*\(\s*\w*\s*\)", f"__random_val()", expr, flags=re.IGNORECASE)
+        # Обробка .at(index) -> [index]
+        expr = re.sub(r"(\w+)\.at\s*\(\s*([^)]+)\)", r"\1[\2]", expr)
 
+        # Обробка .front() та .back()
         for name, arr in self.arrays.items():
+            if arr:
+                expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
+                expr = re.sub(rf"\b{name}\.back\s*\(\s*\)", str(arr[-1]), expr)
             expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), expr)
             for idx, val in enumerate(arr):
                 expr = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), expr)
+
+        expr = re.sub(r"\brand\s*\(\s*\)", str(random.randint(0, 32767)), expr)
+        expr = re.sub(r"\b\w*dist\w*\s*\(\s*\w*\s*\)", f"__random_val()", expr, flags=re.IGNORECASE)
 
         env = {
             "__random_val": lambda: random.randint(self.random_min, self.random_max),
@@ -300,7 +307,6 @@ class CppUniversalEngine:
             if i >= n:
                 break
 
-            # Цикл for(...) { ... }
             if block_str[i:].startswith("for"):
                 for_head_match = re.match(r"for\s*\(([^)]*)\)", block_str[i:])
                 if for_head_match:
@@ -384,7 +390,27 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # 1. Звільнення пам'яті динамічного масиву: delete[] arr;
+        # 1. Оголошення std::array<type, size> name [= {init}];
+        std_array_match = re.search(r"(?:std::)?array\s*<\s*\w+\s*,\s*([^>]+)>\s*(\w+)", s)
+        if std_array_match:
+            raw_sz = std_array_match.group(1).strip()
+            name = std_array_match.group(2).strip()
+            sz = min(max(self.eval_expression(raw_sz), 0), 25)
+            self.main_array_name = name
+
+            init_vals = []
+            brace_m = re.search(r"\{([^}]*)\}", s)
+            if brace_m and brace_m.group(1).strip():
+                init_vals = [self.eval_expression(x) for x in brace_m.group(1).split(',') if x.strip()]
+
+            self.arrays[name] = [0] * sz
+            for idx, val in enumerate(init_vals[:sz]):
+                self.arrays[name][idx] = val
+
+            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
+            return
+
+        # 2. Звільнення динамічного масиву delete[]
         delete_m = re.search(r"delete\s*\[\s*\]\s*(\w+)", s)
         if delete_m:
             target_name = delete_m.group(1)
@@ -393,7 +419,7 @@ class CppUniversalEngine:
                 steps.append(([], f"{target_name}.clear()"))
             return
 
-        # 2. Оголошення або виділення динамічного масиву: int* arr = new int[N]...
+        # 3. new int[N]
         new_m = re.search(r"(?:(?:int|double|float|auto)\s*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*\[([^\]]*)\]", s)
         if new_m:
             name = new_m.group(1)
@@ -414,7 +440,7 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # 3. Переприсвоєння вказівника на інший динамічний масив: arr = temp;
+        # 4. Переприсвоєння вказівника: arr = temp;
         ptr_assign = re.match(r"^(\w+)\s*=\s*(\w+)$", s)
         if ptr_assign:
             lhs = ptr_assign.group(1)
@@ -428,7 +454,7 @@ class CppUniversalEngine:
                 self.variables[lhs] = self.variables[rhs]
                 return
 
-        # 4. Оголошення vector<int> name ...
+        # 5. Оголошення vector<int>
         if "vector<" in s or "std::vector<" in s:
             decl_m = re.search(r"vector\s*<\s*\w+\s*>\s*(\w+)", s)
             if decl_m:
@@ -450,7 +476,7 @@ class CppUniversalEngine:
                 steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})"))
                 return
 
-        # 5. Оголошення статичного масиву C: int arr[N]...
+        # 6. Оголошення класичного C-масиву: int arr[N]...
         arr_decl = re.search(r"(?:int|auto|double|float)\s+(\w+)\s*\[([^\]]*)\]", s)
         if arr_decl and "=" not in s.split("[")[0]:
             name = arr_decl.group(1)
@@ -471,8 +497,12 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # Нормалізація присвоєння через вказівник: *(arr + i) = val -> arr[i] = val
+        # Нормалізація вказівникового доступу: *(arr + i) = val
         s = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)\s*=", r"\1[\2] =", s)
+
+        # Нормалізація методів .at(i), .front(), .back() для присвоєння
+        s = re.sub(r"(\w+)\.at\s*\(\s*([^)]+)\)\s*=", r"\1[\2] =", s)
+        s = re.sub(r"(\w+)\.front\s*\(\s*\)\s*=", r"\1[0] =", s)
 
         target_name = self.main_array_name
         for aname in self.arrays:
@@ -489,7 +519,21 @@ class CppUniversalEngine:
 
         arr = self.arrays[target_name]
 
-        # 6. push_back / emplace_back
+        # Підтримка .back() = val
+        if f"{target_name}.back()" in s and "=" in s and arr:
+            s = s.replace(f"{target_name}.back()", f"{target_name}[{len(arr)-1}]")
+
+        # 7. Метод .fill(val) із бібліотеки <array>
+        if ".fill" in s:
+            val_expr = s[s.find("(")+1:s.rfind(")")]
+            val = self.eval_expression(val_expr)
+            for idx in range(len(arr)):
+                old = arr[idx]
+                arr[idx] = val
+                steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
+            return
+
+        # 8. push_back / emplace_back
         if ".push_back" in s or ".emplace_back" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
             val = self.eval_expression(val_expr)
@@ -498,14 +542,14 @@ class CppUniversalEngine:
                 steps.append((list(arr), f"{target_name}.push_back({val})"))
             return
 
-        # 7. pop_back
+        # 9. pop_back
         if ".pop_back" in s:
             if arr:
                 rem = arr.pop()
                 steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}"))
             return
 
-        # 8. insert (begin() + pos, val)
+        # 10. insert
         if ".insert" in s:
             args_str = s[s.find("(")+1:s.rfind(")")]
             args = [a.strip() for a in args_str.split(",")]
@@ -520,7 +564,7 @@ class CppUniversalEngine:
                     steps.append((list(arr), f"{target_name}.insert({pos}, {val})"))
             return
 
-        # 9. erase (begin() + pos)
+        # 11. erase
         if ".erase" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             pos = 0
@@ -531,7 +575,7 @@ class CppUniversalEngine:
                 steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}"))
             return
 
-        # 10. resize
+        # 12. resize
         if ".resize" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             args = [a.strip() for a in arg_str.split(",")]
@@ -544,13 +588,21 @@ class CppUniversalEngine:
             steps.append((list(arr), f"{target_name}.resize({new_sz})"))
             return
 
-        # 11. clear
+        # 13. clear
         if ".clear" in s:
             arr.clear()
             steps.append(([], f"{target_name}.clear()"))
             return
 
-        # 12. Присвоєння arr[index] = val;
+        # 14. Обмін arr1.swap(arr2)
+        if ".swap" in s:
+            other_name = s[s.find("(")+1:s.rfind(")")].strip()
+            if other_name in self.arrays:
+                self.arrays[target_name], self.arrays[other_name] = self.arrays[other_name], self.arrays[target_name]
+                steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]"))
+            return
+
+        # 15. Пряме присвоєння arr[index] = val;
         if "[" in s and "]" in s and "=" in s:
             lhs, rhs = s.split("=", 1)
             b_l = lhs.find("[")
@@ -571,7 +623,7 @@ class CppUniversalEngine:
 class CodeVisualizer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Покрокова візуалізація масивів і векторів C++")
+        self.setWindowTitle("Покрокова візуалізація масивів C++ (Array, Vector, Pointer)")
 
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
