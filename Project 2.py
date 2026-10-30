@@ -212,9 +212,23 @@ class AdaptiveAnimationWidget(QWidget):
         anim_group.start()
 
 
+class CppIterator:
+    """Модель C++ ітератора, пов'язана з конкретним масивом/вектором."""
+    def __init__(self, container_name, index, is_reverse=False):
+        self.container_name = container_name
+        self.index = index
+        self.is_reverse = is_reverse
+
+    def clone(self):
+        return CppIterator(self.container_name, self.index, self.is_reverse)
+
+
 class CppUniversalEngine:
     """
     Універсальний симулятор коду C++:
+    - Бібліотека <iterator>: std::begin, std::end, std::next, std::prev, std::advance, std::distance
+    - Операції з ітераторами: ++, --, +=, -=, розіменування *it
+    - Range-based for та цикли за ітераторами
     - Бібліотека <array>: std::array<T, N> (fill, at, front, back, swap)
     - Статичні та динамічні масиви (new[], delete[], вказівники)
     - Вектори std::vector (push_back, pop_back, insert, erase, resize, clear)
@@ -222,6 +236,7 @@ class CppUniversalEngine:
     """
     def __init__(self):
         self.variables = {}
+        self.iterators = {}
         self.arrays = {}
         self.main_array_name = "arr"
         self.random_min = 1
@@ -239,10 +254,104 @@ class CppUniversalEngine:
             cleaned_lines.append(line)
         return " ".join(cleaned_lines)
 
+    def resolve_iterator_expr(self, expr_str):
+        """Перетворює вирази ітераторів на об'єкт CppIterator або числовий індекс."""
+        expr = expr_str.strip()
+
+        # std::next(it, n) / next(it, n)
+        next_m = re.match(r"(?:std::)?next\s*\((.*)\)", expr)
+        if next_m:
+            args = [a.strip() for a in next_m.group(1).split(',')]
+            base_it = self.resolve_iterator_expr(args[0])
+            offset = self.eval_expression(args[1]) if len(args) > 1 else 1
+            if isinstance(base_it, CppIterator):
+                res = base_it.clone()
+                res.index += (-offset if res.is_reverse else offset)
+                return res
+
+        # std::prev(it, n) / prev(it, n)
+        prev_m = re.match(r"(?:std::)?prev\s*\((.*)\)", expr)
+        if prev_m:
+            args = [a.strip() for a in prev_m.group(1).split(',')]
+            base_it = self.resolve_iterator_expr(args[0])
+            offset = self.eval_expression(args[1]) if len(args) > 1 else 1
+            if isinstance(base_it, CppIterator):
+                res = base_it.clone()
+                res.index -= (-offset if res.is_reverse else offset)
+                return res
+
+        # std::begin(c) / begin(c)
+        begin_m = re.match(r"(?:std::)?begin\s*\(\s*(\w+)\s*\)", expr)
+        if begin_m:
+            return CppIterator(begin_m.group(1), 0, False)
+
+        # std::end(c) / end(c)
+        end_m = re.match(r"(?:std::)?end\s*\(\s*(\w+)\s*\)", expr)
+        if end_m:
+            cname = end_m.group(1)
+            return CppIterator(cname, len(self.arrays.get(cname, [])), False)
+
+        # std::rbegin(c) / rbegin(c)
+        rbegin_m = re.match(r"(?:std::)?rbegin\s*\(\s*(\w+)\s*\)", expr)
+        if rbegin_m:
+            cname = rbegin_m.group(1)
+            return CppIterator(cname, len(self.arrays.get(cname, [])) - 1, True)
+
+        # std::rend(c) / rend(c)
+        rend_m = re.match(r"(?:std::)?rend\s*\(\s*(\w+)\s*\)", expr)
+        if rend_m:
+            return CppIterator(rend_m.group(1), -1, True)
+
+        # c.begin(), c.end(), c.rbegin(), c.rend()
+        method_m = re.match(r"(\w+)\.(begin|end|rbegin|rend)\s*\(\s*\)", expr)
+        if method_m:
+            cname, mname = method_m.group(1), method_m.group(2)
+            c_len = len(self.arrays.get(cname, []))
+            if mname == "begin": return CppIterator(cname, 0, False)
+            if mname == "end": return CppIterator(cname, c_len, False)
+            if mname == "rbegin": return CppIterator(cname, c_len - 1, True)
+            if mname == "rend": return CppIterator(cname, -1, True)
+
+        # it + n / it - n
+        if "+" in expr or "-" in expr:
+            op = "+" if "+" in expr else "-"
+            parts = expr.split(op, 1)
+            left_it = self.resolve_iterator_expr(parts[0])
+            if isinstance(left_it, CppIterator):
+                offset = self.eval_expression(parts[1])
+                res = left_it.clone()
+                if op == "+":
+                    res.index += (-offset if res.is_reverse else offset)
+                else:
+                    res.index -= (-offset if res.is_reverse else offset)
+                return res
+
+        # Назва існуючої змінної-ітератора
+        if expr in self.iterators:
+            return self.iterators[expr].clone()
+
+        return None
+
     def eval_expression(self, expr_str):
         expr = str(expr_str).strip()
         if not expr:
             return 0
+
+        # std::distance(first, last)
+        dist_fn = re.search(r"(?:std::)?distance\s*\(([^,]+),\s*([^)]+)\)", expr)
+        if dist_fn:
+            it1 = self.resolve_iterator_expr(dist_fn.group(1))
+            it2 = self.resolve_iterator_expr(dist_fn.group(2))
+            if isinstance(it1, CppIterator) and isinstance(it2, CppIterator):
+                val_dist = abs(it2.index - it1.index)
+                expr = expr.replace(dist_fn.group(0), str(val_dist))
+
+        # Розіменування ітераторів: *it
+        for it_name, it_obj in self.iterators.items():
+            if it_obj.container_name in self.arrays:
+                arr = self.arrays[it_obj.container_name]
+                curr_val = arr[it_obj.index] if 0 <= it_obj.index < len(arr) else 0
+                expr = re.sub(rf"\*\s*{it_name}\b", str(curr_val), expr)
 
         # Обробка вказівникової арифметики *(arr + i)
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
@@ -279,6 +388,7 @@ class CppUniversalEngine:
 
     def run(self, code_text):
         self.variables.clear()
+        self.iterators.clear()
         self.arrays.clear()
         self.main_array_name = ""
         self.random_min, self.random_max = 1, 100
@@ -307,6 +417,7 @@ class CppUniversalEngine:
             if i >= n:
                 break
 
+            # 1. Цикл for
             if block_str[i:].startswith("for"):
                 for_head_match = re.match(r"for\s*\(([^)]*)\)", block_str[i:])
                 if for_head_match:
@@ -333,6 +444,7 @@ class CppUniversalEngine:
                     self.run_for_loop(header, body_stmt, steps)
                     continue
 
+            # 2. Звичайна інструкція до ';'
             semi_pos = block_str.find(';', i)
             if semi_pos == -1:
                 stmt = block_str[i:].strip()
@@ -345,14 +457,41 @@ class CppUniversalEngine:
                 self.execute_statement(stmt, steps)
 
     def run_for_loop(self, header, body, steps):
+        # Range-based for: for (auto& x : container) або for (int x : container)
+        if ":" in header and ";" not in header:
+            var_part, cont_part = [p.strip() for p in header.split(":", 1)]
+            var_name = var_part.replace("&", "").split()[-1].strip()
+            cont_name = cont_part.strip()
+            if cont_name in self.arrays:
+                arr = self.arrays[cont_name]
+                for idx in range(len(arr)):
+                    self.variables[var_name] = arr[idx]
+                    self.execute_block(body, steps)
+                    # Якщо змінна була по посиланню auto&, зберігаємо зміни
+                    if "&" in var_part and self.variables.get(var_name) != arr[idx]:
+                        old = arr[idx]
+                        arr[idx] = self.variables[var_name]
+                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})"))
+            return
+
         parts = header.split(';')
         if len(parts) != 3:
             return
 
         init_part, cond_part, inc_part = [p.strip() for p in parts]
         
-        iter_var = "i"
-        if "=" in init_part:
+        # Обробка ініціалізації циклу (звичайна або через ітератор)
+        is_iter_loop = False
+        loop_iter_name = ""
+
+        if ("iterator" in init_part or "auto" in init_part) and "=" in init_part:
+            lhs, rhs = init_part.split('=', 1)
+            loop_iter_name = lhs.split()[-1].strip()
+            it_obj = self.resolve_iterator_expr(rhs)
+            if it_obj:
+                self.iterators[loop_iter_name] = it_obj
+                is_iter_loop = True
+        elif "=" in init_part:
             lhs, rhs = init_part.split('=', 1)
             iter_var = lhs.split()[-1].strip()
             self.variables[iter_var] = self.eval_expression(rhs)
@@ -361,28 +500,48 @@ class CppUniversalEngine:
         it_count = 0
 
         while it_count < max_safety_iterations:
-            c_expr = cond_part
-            for k, v in self.variables.items():
-                c_expr = re.sub(rf"\b{k}\b", str(v), c_expr)
-            for name, arr in self.arrays.items():
-                c_expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_expr)
-
-            try:
-                if not eval(c_expr):
+            # Перевірка умови
+            if is_iter_loop and loop_iter_name in self.iterators:
+                it_obj = self.iterators[loop_iter_name]
+                end_match = re.search(r"!=\s*([^;]+)", cond_part)
+                if end_match:
+                    target_end = self.resolve_iterator_expr(end_match.group(1))
+                    if target_end and it_obj.index == target_end.index:
+                        break
+            else:
+                c_expr = cond_part
+                for k, v in self.variables.items():
+                    c_expr = re.sub(rf"\b{k}\b", str(v), c_expr)
+                for name, arr in self.arrays.items():
+                    c_expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_expr)
+                try:
+                    if not eval(c_expr):
+                        break
+                except Exception:
                     break
-            except Exception:
-                break
 
+            # Виконання тіла циклу
             self.execute_block(body, steps)
 
-            if "++" in inc_part:
-                self.variables[iter_var] = self.variables.get(iter_var, 0) + 1
-            elif "--" in inc_part:
-                self.variables[iter_var] = self.variables.get(iter_var, 0) - 1
-            elif "+=" in inc_part:
-                step_val = self.eval_expression(inc_part.split("+=", 1)[1])
-                self.variables[iter_var] = self.variables.get(iter_var, 0) + step_val
-            
+            # Інкремент
+            if is_iter_loop and loop_iter_name in self.iterators:
+                it_obj = self.iterators[loop_iter_name]
+                if "++" in inc_part:
+                    it_obj.index += (-1 if it_obj.is_reverse else 1)
+                elif "--" in inc_part:
+                    it_obj.index -= (-1 if it_obj.is_reverse else 1)
+            else:
+                if "++" in inc_part:
+                    vname = inc_part.replace("++", "").strip()
+                    self.variables[vname] = self.variables.get(vname, 0) + 1
+                elif "--" in inc_part:
+                    vname = inc_part.replace("--", "").strip()
+                    self.variables[vname] = self.variables.get(vname, 0) - 1
+                elif "+=" in inc_part:
+                    vname, step_str = inc_part.split("+=", 1)
+                    vname = vname.strip()
+                    self.variables[vname] = self.variables.get(vname, 0) + self.eval_expression(step_str)
+
             it_count += 1
 
     def execute_statement(self, stmt, steps):
@@ -390,14 +549,71 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # 1. Оголошення std::array<type, size> name [= {init}];
-        std_array_match = re.search(r"(?:std::)?array\s*<\s*\w+\s*,\s*([^>]+)>\s*(\w+)", s)
-        if std_array_match:
-            raw_sz = std_array_match.group(1).strip()
-            name = std_array_match.group(2).strip()
-            sz = min(max(self.eval_expression(raw_sz), 0), 25)
+        # 1. std::advance(it, n)
+        advance_m = re.search(r"(?:std::)?advance\s*\(\s*(\w+)\s*,\s*([^)]+)\)", s)
+        if advance_m:
+            it_name = advance_m.group(1)
+            dist = self.eval_expression(advance_m.group(2))
+            if it_name in self.iterators:
+                it_obj = self.iterators[it_name]
+                it_obj.index += (-dist if it_obj.is_reverse else dist)
+            return
+
+        # 2. Оголошення та присвоєння ітераторів (vector<int>::iterator it = v.begin(); auto it = ...)
+        if ("iterator" in s or "auto" in s) and "=" in s and not ("vector<" in s and "::" not in s):
+            lhs, rhs = s.split("=", 1)
+            it_name = lhs.split()[-1].strip()
+            it_obj = self.resolve_iterator_expr(rhs)
+            if it_obj:
+                self.iterators[it_name] = it_obj
+                return
+
+        # 3. Модифікація через розіменування ітератора: *it = val
+        deref_assign = re.match(r"^\*\s*(\w+)\s*=\s*(.+)$", s)
+        if deref_assign:
+            it_name = deref_assign.group(1)
+            val = self.eval_expression(deref_assign.group(2))
+            if it_name in self.iterators:
+                it_obj = self.iterators[it_name]
+                target_name = it_obj.container_name
+                if target_name in self.arrays:
+                    arr = self.arrays[target_name]
+                    idx = it_obj.index
+                    if 0 <= idx < len(arr):
+                        old = arr[idx]
+                        arr[idx] = val
+                        steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
+            return
+
+        # 4. Інкремент / декремент ітератора окремим рядком: it++; ++it; it += n;
+        for it_name in list(self.iterators.keys()):
+            if re.match(rf"^(\+\+{it_name}|{it_name}\+\+)$", s):
+                it_obj = self.iterators[it_name]
+                it_obj.index += (-1 if it_obj.is_reverse else 1)
+                return
+            if re.match(rf"^(--{it_name}|{it_name}--)$", s):
+                it_obj = self.iterators[it_name]
+                it_obj.index -= (-1 if it_obj.is_reverse else 1)
+                return
+            if s.startswith(f"{it_name} +="):
+                offset = self.eval_expression(s.split("+=", 1)[1])
+                it_obj = self.iterators[it_name]
+                it_obj.index += (-offset if it_obj.is_reverse else offset)
+                return
+            if s.startswith(f"{it_name} -="):
+                offset = self.eval_expression(s.split("-=", 1)[1])
+                it_obj = self.iterators[it_name]
+                it_obj.index -= (-offset if it_obj.is_reverse else offset)
+                return
+
+        # 5. Оголошення std::array<type, size> name;
+        array_lib_m = re.search(r"(?:std\s*::\s*)?array\s*<\s*[\w:]+\s*,\s*([^>]+)>\s*(\w+)", s)
+        if array_lib_m:
+            raw_sz = array_lib_m.group(1).strip()
+            name = array_lib_m.group(2).strip()
             self.main_array_name = name
 
+            sz = min(max(self.eval_expression(raw_sz), 0), 25)
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
@@ -410,7 +626,7 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # 2. Звільнення динамічного масиву delete[]
+        # 6. delete[] arr;
         delete_m = re.search(r"delete\s*\[\s*\]\s*(\w+)", s)
         if delete_m:
             target_name = delete_m.group(1)
@@ -419,7 +635,7 @@ class CppUniversalEngine:
                 steps.append(([], f"{target_name}.clear()"))
             return
 
-        # 3. new int[N]
+        # 7. int* arr = new int[N];
         new_m = re.search(r"(?:(?:int|double|float|auto)\s*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*\[([^\]]*)\]", s)
         if new_m:
             name = new_m.group(1)
@@ -440,7 +656,7 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # 4. Переприсвоєння вказівника: arr = temp;
+        # 8. arr = temp;
         ptr_assign = re.match(r"^(\w+)\s*=\s*(\w+)$", s)
         if ptr_assign:
             lhs = ptr_assign.group(1)
@@ -450,11 +666,14 @@ class CppUniversalEngine:
                 self.main_array_name = lhs
                 steps.append((list(self.arrays[lhs]), f"Оголошено масив: {lhs}[{len(self.arrays[lhs])}]"))
                 return
+            elif rhs in self.iterators:
+                self.iterators[lhs] = self.iterators[rhs].clone()
+                return
             elif rhs in self.variables:
                 self.variables[lhs] = self.variables[rhs]
                 return
 
-        # 5. Оголошення vector<int>
+        # 9. vector<int>
         if "vector<" in s or "std::vector<" in s:
             decl_m = re.search(r"vector\s*<\s*\w+\s*>\s*(\w+)", s)
             if decl_m:
@@ -476,7 +695,7 @@ class CppUniversalEngine:
                 steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})"))
                 return
 
-        # 6. Оголошення класичного C-масиву: int arr[N]...
+        # 10. Статичний масив: int arr[N]
         arr_decl = re.search(r"(?:int|auto|double|float)\s+(\w+)\s*\[([^\]]*)\]", s)
         if arr_decl and "=" not in s.split("[")[0]:
             name = arr_decl.group(1)
@@ -497,10 +716,8 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # Нормалізація вказівникового доступу: *(arr + i) = val
+        # Нормалізація вказівника та методів: *(arr + i) = val -> arr[i] = val
         s = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)\s*=", r"\1[\2] =", s)
-
-        # Нормалізація методів .at(i), .front(), .back() для присвоєння
         s = re.sub(r"(\w+)\.at\s*\(\s*([^)]+)\)\s*=", r"\1[\2] =", s)
         s = re.sub(r"(\w+)\.front\s*\(\s*\)\s*=", r"\1[0] =", s)
 
@@ -514,26 +731,39 @@ class CppUniversalEngine:
             if "=" in s:
                 lhs, rhs = s.split("=", 1)
                 vname = lhs.replace("*", "").split()[-1].strip()
-                self.variables[vname] = self.eval_expression(rhs)
+                it_try = self.resolve_iterator_expr(rhs)
+                if it_try:
+                    self.iterators[vname] = it_try
+                else:
+                    self.variables[vname] = self.eval_expression(rhs)
             return
 
         arr = self.arrays[target_name]
 
-        # Підтримка .back() = val
         if f"{target_name}.back()" in s and "=" in s and arr:
             s = s.replace(f"{target_name}.back()", f"{target_name}[{len(arr)-1}]")
 
-        # 7. Метод .fill(val) із бібліотеки <array>
+        # 11. .fill(val)
         if ".fill" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
             val = self.eval_expression(val_expr)
-            for idx in range(len(arr)):
-                old = arr[idx]
-                arr[idx] = val
-                steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
+            for i in range(len(arr)):
+                old = arr[i]
+                arr[i] = val
+                steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})"))
             return
 
-        # 8. push_back / emplace_back
+        # 12. .swap(other)
+        if ".swap" in s:
+            other_m = re.search(r"\.swap\s*\(\s*(\w+)\s*\)", s)
+            if other_m:
+                other_name = other_m.group(1)
+                if other_name in self.arrays:
+                    self.arrays[target_name], self.arrays[other_name] = self.arrays[other_name], self.arrays[target_name]
+                    steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]"))
+            return
+
+        # 13. push_back / emplace_back
         if ".push_back" in s or ".emplace_back" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
             val = self.eval_expression(val_expr)
@@ -542,21 +772,25 @@ class CppUniversalEngine:
                 steps.append((list(arr), f"{target_name}.push_back({val})"))
             return
 
-        # 9. pop_back
+        # 14. pop_back
         if ".pop_back" in s:
             if arr:
                 rem = arr.pop()
                 steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}"))
             return
 
-        # 10. insert
+        # 15. insert (з підтримкою ітераторів v.insert(it, val) та v.begin() + i)
         if ".insert" in s:
             args_str = s[s.find("(")+1:s.rfind(")")]
             args = [a.strip() for a in args_str.split(",")]
             if len(args) >= 2:
-                pos = 0
-                if "+" in args[0]:
-                    pos = self.eval_expression(args[0].split("+", 1)[1])
+                it_target = self.resolve_iterator_expr(args[0])
+                if isinstance(it_target, CppIterator):
+                    pos = it_target.index
+                else:
+                    pos = 0
+                    if "+" in args[0]:
+                        pos = self.eval_expression(args[0].split("+", 1)[1])
                 val = self.eval_expression(args[1])
                 pos = max(0, min(pos, len(arr)))
                 if len(arr) < 25:
@@ -564,18 +798,22 @@ class CppUniversalEngine:
                     steps.append((list(arr), f"{target_name}.insert({pos}, {val})"))
             return
 
-        # 11. erase
+        # 16. erase (з підтримкою ітераторів v.erase(it))
         if ".erase" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
-            pos = 0
-            if "+" in arg_str:
-                pos = self.eval_expression(arg_str.split("+", 1)[1])
+            it_target = self.resolve_iterator_expr(arg_str)
+            if isinstance(it_target, CppIterator):
+                pos = it_target.index
+            else:
+                pos = 0
+                if "+" in arg_str:
+                    pos = self.eval_expression(arg_str.split("+", 1)[1])
             if 0 <= pos < len(arr):
                 rem = arr.pop(pos)
                 steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}"))
             return
 
-        # 12. resize
+        # 17. resize
         if ".resize" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             args = [a.strip() for a in arg_str.split(",")]
@@ -588,21 +826,13 @@ class CppUniversalEngine:
             steps.append((list(arr), f"{target_name}.resize({new_sz})"))
             return
 
-        # 13. clear
+        # 18. clear
         if ".clear" in s:
             arr.clear()
             steps.append(([], f"{target_name}.clear()"))
             return
 
-        # 14. Обмін arr1.swap(arr2)
-        if ".swap" in s:
-            other_name = s[s.find("(")+1:s.rfind(")")].strip()
-            if other_name in self.arrays:
-                self.arrays[target_name], self.arrays[other_name] = self.arrays[other_name], self.arrays[target_name]
-                steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]"))
-            return
-
-        # 15. Пряме присвоєння arr[index] = val;
+        # 19. Присвоєння arr[index] = val;
         if "[" in s and "]" in s and "=" in s:
             lhs, rhs = s.split("=", 1)
             b_l = lhs.find("[")
@@ -623,7 +853,7 @@ class CppUniversalEngine:
 class CodeVisualizer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Покрокова візуалізація масивів C++")
+        self.setWindowTitle("Покрокова візуалізація масивів і векторів C++")
 
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
