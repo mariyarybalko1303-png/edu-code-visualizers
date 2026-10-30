@@ -161,10 +161,10 @@ class AdaptiveAnimationWidget(QWidget):
 
     def update_variables(self, new_values, step_description="", show_sum_avg=False, 
                          count_metric=None, max_indices=None, current_max_val=None, 
-                         temp_val=None, pair_indices=None):
+                         temp_val=None, pair_indices=None, capacity_metric=None, size_metric=None):
         self.clear_static_layer()
         
-        # 1. Текстовий опис кроку
+        # 1. Текстовий опис процесу
         if step_description:
             desc_item = self.scene.addText(str(step_description))
             desc_item.setFont(QFont("Consolas", 13, QFont.Bold))
@@ -172,8 +172,14 @@ class AdaptiveAnimationWidget(QWidget):
             desc_item.setPos(self.base_x, self.base_y - 75)
             self.static_items.append(desc_item)
 
-        # 2. Метрики (Сума, Середнє, Підрахунок, Максимум)
+        # 2. Адаптивні метрики (Місткість, Кількість, Сума, Сер, Макс)
         metrics_parts = []
+        if capacity_metric is not None or size_metric is not None:
+            cap_str = f"Місткість (Capacity): {capacity_metric}" if capacity_metric is not None else ""
+            sz_str = f"Кількість (Size): {size_metric}" if size_metric is not None else f"Кількість (Size): {len(new_values)}"
+            joined_cs = " | ".join(filter(None, [cap_str, sz_str]))
+            metrics_parts.append(joined_cs)
+
         if show_sum_avg:
             if new_values:
                 curr_sum = sum(new_values)
@@ -182,8 +188,8 @@ class AdaptiveAnimationWidget(QWidget):
             else:
                 metrics_parts.append("Сума: 0 | Сер: 0.00")
 
-        if count_metric is not None:
-            metrics_parts.append(f"Кількість: {count_metric}")
+        if count_metric is not None and size_metric is None:
+            metrics_parts.append(f"Кількість за умовою: {count_metric}")
 
         if current_max_val is not None:
             idxs_str = f" [індекси: {', '.join(map(str, max_indices))}]" if max_indices else ""
@@ -248,7 +254,6 @@ class AdaptiveAnimationWidget(QWidget):
             old_val = block_data['value']
             new_val = new_values[i]
 
-            # Симетрична пара підсвічується #e056fd, максимум — #f39c12, звичайний — #33ccff
             if i in pair_idx_set:
                 target_color = "#e056fd"
             elif i in max_idx_set:
@@ -305,6 +310,17 @@ class CppIterator:
 
 
 class CppUniversalEngine:
+    """
+    Універсальний симулятор коду C++:
+    - Відбір елементів за умовою з контролем місткості (capacity) та кількості (size/count)
+    - Циклічний зсув ліворуч на одну позицію
+    - Реверс та симетричний обмін пар
+    - Буфер обміну temp
+    - Пошук глобального максимуму / максимумів
+    - Підрахунок за умовою (count, count_if)
+    - Обчислення суми та середнього арифметичного
+    - <iterator>, <array>, класичні масиви C, вектори, new/delete
+    """
     def __init__(self):
         self.variables = {}
         self.iterators = {}
@@ -315,18 +331,26 @@ class CppUniversalEngine:
         self.has_sum_avg = False
         self.has_count = False
         self.has_max_search = False
+        self.has_capacity_size = False
         self.condition_count = None
         self.max_indices = []
         self.current_max_val = None
         self.temp_val = None
         self.active_pair = None
+        self.current_capacity = None
+        self.current_size = None
 
     def clean_code(self, source):
         no_block_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         no_line_comments = re.sub(r"//.*", "", no_block_comments)
         
+        normalized = no_line_comments
+        normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
+        normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
+        normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
+
         cleaned_lines = []
-        for line in no_line_comments.splitlines():
+        for line in normalized.splitlines():
             l = line.strip()
             if l.startswith("#") or l.startswith("using "):
                 continue
@@ -338,6 +362,7 @@ class CppUniversalEngine:
         self.has_sum_avg = bool(re.search(r"\b(sum|avg|average|mean|accumulate)\b", code_lower))
         self.has_count = bool(re.search(r"\b(count|counter|matched|count_if)\b", code_lower))
         self.has_max_search = bool(re.search(r"\b(max|maxval|max_val|max_element|maximum)\b", code_lower))
+        self.has_capacity_size = bool(re.search(r"\b(capacity|cap|size|actual_size|count)\b", code_lower))
 
     def resolve_iterator_expr(self, expr_str):
         expr = expr_str.strip()
@@ -483,7 +508,6 @@ class CppUniversalEngine:
 
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        # Читання через .at(i) для std::array або звичайного масиву
         for name, arr in self.arrays.items():
             at_reads = re.findall(rf"\b{name}\.at\s*\(\s*([^)]+)\s*\)", expr)
             for raw_idx in at_reads:
@@ -496,6 +520,7 @@ class CppUniversalEngine:
                 expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
                 expr = re.sub(rf"\b{name}\.back\s*\(\s*\)", str(arr[-1]), expr)
             expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), expr)
+            expr = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), expr)
             for idx, val in enumerate(arr):
                 expr = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), expr)
 
@@ -513,6 +538,10 @@ class CppUniversalEngine:
         }
         env.update(self.variables)
 
+        if self.main_array_name in self.arrays:
+            env.setdefault("N", len(self.arrays[self.main_array_name]))
+            env.setdefault("n", len(self.arrays[self.main_array_name]))
+
         try:
             res = eval(expr, {"__builtins__": {}}, env)
             return float(res) if isinstance(res, float) else int(res)
@@ -525,13 +554,15 @@ class CppUniversalEngine:
         self.variables.clear()
         self.iterators.clear()
         self.arrays.clear()
-        self.main_array_name = ""
+        self.main_array_name = "arr"
         self.random_min, self.random_max = 1, 100
         self.condition_count = None
         self.max_indices = []
         self.current_max_val = None
         self.temp_val = None
         self.active_pair = None
+        self.current_capacity = None
+        self.current_size = None
         steps = []
 
         code = self.clean_code(code_text)
@@ -544,6 +575,19 @@ class CppUniversalEngine:
 
         main_match = re.search(r"int\s+main\s*\([^)]*\)\s*\{(.*)\}", code, re.DOTALL)
         body = main_match.group(1) if main_match else code
+
+        # Автоматичне виявлення вхідного масиву, якщо код починається з фрагментів зсуву/відбору
+        has_decl = bool(re.search(r"(?:int|auto|vector|array)\s+\w+\s*\[|\bvector\s*<|\barray\s*<", body))
+        if not has_decl and ("a[" in body or "arr[" in body):
+            var_guess = "a" if "a[" in body else "arr"
+            self.main_array_name = var_guess
+            self.arrays[var_guess] = [10, -5, 20, 0, 30, -2, 40]
+            self.variables["N"] = 7
+            self.variables["n"] = 7
+            self.variables["capacity"] = 10
+            self.current_capacity = 10
+            self.current_size = 7
+            steps.append((list(self.arrays[var_guess]), f"Вхідний масив: {var_guess}[7] = [10, -5, 20, 0, 30, -2, 40]", False, None, None, None, None, None, self.current_capacity, self.current_size))
 
         self.execute_block(body, steps)
         return steps
@@ -639,6 +683,9 @@ class CppUniversalEngine:
         curr_arr = list(self.arrays.get(self.main_array_name, []))
         is_max_cond = bool(re.search(r">\s*max|max\s*<", cond_expr.lower()))
 
+        # Відбір за умовою: перевірка чи елемент підходить
+        is_filter_cond = bool(re.search(r">\s*0|<\s*0|%\s*2\s*==|!=\s*0|count\s*<|size\s*<|capacity", cond_expr.lower()))
+
         if cond_result:
             self.execute_block(body_stmt, steps)
             if is_max_cond:
@@ -656,17 +703,36 @@ class CppUniversalEngine:
                     list(self.max_indices),
                     self.current_max_val,
                     self.temp_val,
-                    self.active_pair
+                    self.active_pair,
+                    self.current_capacity,
+                    self.current_size
+                ))
+            elif is_filter_cond:
+                cnt_val = self.variables.get("count", self.variables.get("size", self.condition_count))
+                self.current_size = cnt_val
+                steps.append((
+                    curr_arr, 
+                    f"Відбір: Умова ({cond_expr}) -> ПІДХОДИТЬ. Елемент відібрано! Кількість: {cnt_val}", 
+                    self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.current_capacity, self.current_size
                 ))
             else:
                 cnt_val = self.variables.get("count", self.condition_count)
-                steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> ТАК. Лічильник: {cnt_val}", self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> ТАК. Лічильник: {cnt_val}", self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
         else:
             if is_max_cond:
-                steps.append((curr_arr, f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((curr_arr, f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
+            elif is_filter_cond:
+                cnt_val = self.variables.get("count", self.variables.get("size", self.condition_count))
+                steps.append((
+                    curr_arr, 
+                    f"Відбір: Умова ({cond_expr}) -> НЕ підходить (пропущено).", 
+                    self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.current_capacity, self.current_size
+                ))
             else:
                 cnt_val = self.variables.get("count", self.condition_count)
-                steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> НІ (пропуск). Лічильник: {cnt_val}", self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> НІ (пропуск). Лічильник: {cnt_val}", self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
 
     def run_for_loop(self, header, body, steps):
         if ":" in header and ";" not in header:
@@ -681,7 +747,7 @@ class CppUniversalEngine:
                     if "&" in var_part and self.variables.get(var_name) != arr[idx]:
                         old = arr[idx]
                         arr[idx] = self.variables[var_name]
-                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         parts = header.split(';')
@@ -722,6 +788,7 @@ class CppUniversalEngine:
                     c_expr = re.sub(rf"\b{k}\b", str(v), c_expr)
                 for name, arr in self.arrays.items():
                     c_expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_expr)
+                    c_expr = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_expr)
                 try:
                     if not eval(c_expr):
                         break
@@ -755,7 +822,30 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # 1. std::reverse(begin, end)
+        # 1. Відбір елементів через result[count++] = a[i];
+        filter_push = re.search(r"(\w+)\s*\[\s*(\w+)\s*\+\+\s*\]\s*=\s*(.+)", s)
+        if filter_push:
+            res_arr_name = filter_push.group(1)
+            cnt_var_name = filter_push.group(2)
+            val_to_add = int(self.eval_expression(filter_push.group(3)))
+
+            if res_arr_name not in self.arrays:
+                self.arrays[res_arr_name] = []
+            
+            self.arrays[res_arr_name].append(val_to_add)
+            self.main_array_name = res_arr_name
+            self.variables[cnt_var_name] = self.variables.get(cnt_var_name, 0) + 1
+            self.current_size = len(self.arrays[res_arr_name])
+
+            steps.append((
+                list(self.arrays[res_arr_name]), 
+                f"Відбір елемента: {res_arr_name}[{self.current_size - 1}] = {val_to_add} (фактична кількість: {self.current_size})", 
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                self.current_capacity, self.current_size
+            ))
+            return
+
+        # 2. std::reverse
         reverse_call = re.match(r"(?:std::)?reverse\s*\(([^,]+),\s*([^)]+)\)", s)
         if reverse_call:
             it1 = self.resolve_iterator_expr(reverse_call.group(1))
@@ -769,7 +859,8 @@ class CppUniversalEngine:
                 steps.append((
                     list(arr), 
                     f"Запуск reverse({cname}): симетричний розворот від [{left}] до [{right}]", 
-                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                    self.current_capacity, self.current_size
                 ))
 
                 while left < right:
@@ -778,19 +869,22 @@ class CppUniversalEngine:
                     steps.append((
                         list(arr), 
                         f"Реверс: пара [{left}] <-> [{right}]. Збережено temp = {self.temp_val}", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                     arr[left] = arr[right]
                     steps.append((
                         list(arr), 
                         f"Реверс: {cname}[{left}] = {arr[right]} (копіювання симетричного)", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                     arr[right] = self.temp_val
                     steps.append((
                         list(arr), 
                         f"Реверс: {cname}[{right}] = temp ({self.temp_val}). Пара успішно обміняна!", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                     left += 1
                     right -= 1
@@ -800,11 +894,12 @@ class CppUniversalEngine:
                 steps.append((
                     list(arr), 
                     f"Реверс масиву {cname} повністю виконано!", 
-                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                    self.current_capacity, self.current_size
                 ))
                 return
 
-        # 2. std::advance
+        # 3. std::advance
         advance_m = re.search(r"(?:std::)?advance\s*\(\s*(\w+)\s*,\s*([^)]+)\)", s)
         if advance_m:
             it_name = advance_m.group(1)
@@ -814,7 +909,7 @@ class CppUniversalEngine:
                 it_obj.index += (-dist if it_obj.is_reverse else dist)
             return
 
-        # 3. Ітератори
+        # 4. Ітератори
         if ("iterator" in s or "auto" in s) and "=" in s and not ("vector<" in s and "::" not in s):
             lhs, rhs = s.split("=", 1)
             it_name = lhs.split()[-1].strip()
@@ -823,7 +918,7 @@ class CppUniversalEngine:
                 self.iterators[it_name] = it_obj
                 return
 
-        # 4. *it = val
+        # 5. *it = val
         deref_assign = re.match(r"^\*\s*(\w+)\s*=\s*(.+)$", s)
         if deref_assign:
             it_name = deref_assign.group(1)
@@ -837,7 +932,7 @@ class CppUniversalEngine:
                     if 0 <= idx < len(arr):
                         old = arr[idx]
                         arr[idx] = val
-                        steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                        steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         for it_name in list(self.iterators.keys()):
@@ -860,7 +955,7 @@ class CppUniversalEngine:
                 it_obj.index -= (-offset if it_obj.is_reverse else offset)
                 return
 
-        # 5. Оголошення std::array<type, size> name; (варіант з #include <array>)
+        # 6. std::array<type, size>
         array_lib_m = re.search(r"(?:std\s*::\s*)?array\s*<\s*[\w:]+\s*,\s*([^>]+)>\s*(\w+)", s)
         if array_lib_m:
             raw_sz = array_lib_m.group(1).strip()
@@ -877,19 +972,24 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено std::array: {name}[{sz}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+            self.variables["N"] = sz
+            self.variables["n"] = sz
+            self.current_capacity = sz
+            self.current_size = len(init_vals) if init_vals else sz
+            steps.append((list(self.arrays[name]), f"Оголошено std::array: {name}[{sz}] (місткість: {sz})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
-        # 6. delete[] arr;
+        # 7. delete[] arr;
         delete_m = re.search(r"delete\s*\[\s*\]\s*(\w+)", s)
         if delete_m:
             target_name = delete_m.group(1)
             if target_name in self.arrays:
                 self.arrays[target_name].clear()
-                steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.current_size = 0
+                steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
-        # 7. new int[N];
+        # 8. new int[N];
         new_m = re.search(r"(?:(?:int|double|float|auto)\s*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*\[([^\]]*)\]", s)
         if new_m:
             name = new_m.group(1)
@@ -907,10 +1007,14 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+            self.variables["N"] = sz
+            self.variables["n"] = sz
+            self.current_capacity = sz
+            self.current_size = len(init_vals) if init_vals else sz
+            steps.append((list(self.arrays[name]), f"Оголошено динам. масив: {name}[{sz}] (місткість: {sz})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
-        # 8. arr = temp;
+        # 9. arr = temp;
         ptr_assign = re.match(r"^(\w+)\s*=\s*(\w+)$", s)
         if ptr_assign:
             lhs = ptr_assign.group(1)
@@ -918,7 +1022,7 @@ class CppUniversalEngine:
             if rhs in self.arrays:
                 self.arrays[lhs] = list(self.arrays[rhs])
                 self.main_array_name = lhs
-                steps.append((list(self.arrays[lhs]), f"Оголошено масив: {lhs}[{len(self.arrays[lhs])}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((list(self.arrays[lhs]), f"Оголошено масив: {lhs}[{len(self.arrays[lhs])}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                 return
             elif rhs in self.iterators:
                 self.iterators[lhs] = self.iterators[rhs].clone()
@@ -927,7 +1031,7 @@ class CppUniversalEngine:
                 self.variables[lhs] = self.variables[rhs]
                 return
 
-        # 9. vector<int>
+        # 10. vector<int>
         if "vector<" in s or "std::vector<" in s:
             decl_m = re.search(r"vector\s*<\s*\w+\s*>\s*(\w+)", s)
             if decl_m:
@@ -946,10 +1050,14 @@ class CppUniversalEngine:
                 if brace_m:
                     self.arrays[name] = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()][:25]
 
-                steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.variables["N"] = len(self.arrays[name])
+                self.variables["n"] = len(self.arrays[name])
+                self.current_capacity = len(self.arrays[name]) or 10
+                self.current_size = len(self.arrays[name])
+                steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                 return
 
-        # 10. Оголошення звичайного C-масиву (тільки з #include <iostream>): int arr[N] = {...}
+        # 11. Класичний масив C: int arr[N] = {...}
         arr_decl = re.search(r"(?:int|auto|double|float)\s+(\w+)\s*\[([^\]]*)\]", s)
         if arr_decl and "=" not in s.split("[")[0]:
             name = arr_decl.group(1)
@@ -967,10 +1075,14 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+            self.variables["N"] = sz
+            self.variables["n"] = sz
+            self.current_capacity = sz
+            self.current_size = len(init_vals) if init_vals else sz
+            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}] (місткість: {sz})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
-        # 11. Запис через .at(idx) = val; (з перевіркою меж діапазону)
+        # 12. .at()
         at_assign_m = re.match(r"^(\w+)\.at\s*\(\s*([^)]+)\s*\)\s*=\s*(.+)$", s)
         if at_assign_m:
             target_name = at_assign_m.group(1)
@@ -984,24 +1096,29 @@ class CppUniversalEngine:
                 if 0 <= idx < len(arr):
                     old = arr[idx]
                     arr[idx] = val
-                    steps.append((list(arr), f"{target_name}.at({idx}) = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                    if "temp" in raw_val.lower():
+                        steps.append((list(arr), f"Циклічний зсув: {target_name}.at({idx}) = temp ({val}) (завершено)", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, self.active_pair, self.current_capacity, self.current_size))
+                        self.temp_val = None
+                    else:
+                        steps.append((list(arr), f"{target_name}.at({idx}) = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                 else:
-                    steps.append((list(arr), f"std::out_of_range: {target_name}.at({idx}) поза межами", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                    steps.append((list(arr), f"std::out_of_range: {target_name}.at({idx}) поза межами", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         s = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)\s*=", r"\1[\2] =", s)
         s = re.sub(r"(\w+)\.front\s*\(\s*\)\s*=", r"\1[0] =", s)
 
-        # 12. Підрахунок count++
-        for cnt_alias in ("count", "counter", "matched"):
+        # 13. Лічильники count++
+        for cnt_alias in ("count", "counter", "matched", "size", "actual_size"):
             if re.match(rf"^(\+\+{cnt_alias}|{cnt_alias}\+\+)$", s):
                 self.variables[cnt_alias] = self.variables.get(cnt_alias, 0) + 1
                 self.condition_count = self.variables[cnt_alias]
+                self.current_size = self.variables[cnt_alias]
                 curr_arr = list(self.arrays.get(self.main_array_name, []))
-                steps.append((curr_arr, f"Підрахунок: {cnt_alias} = {self.condition_count} (+1)", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((curr_arr, f"Кількість: {cnt_alias} = {self.current_size} (+1)", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                 return
 
-        # 13. Сума +=
+        # 14. Сума +=
         plus_eq_m = re.match(r"^(\w+)\s*\+=\s*(.+)$", s)
         if plus_eq_m:
             vname = plus_eq_m.group(1).strip()
@@ -1009,10 +1126,11 @@ class CppUniversalEngine:
             self.variables[vname] = self.variables.get(vname, 0) + val_add
             curr_arr = list(self.arrays.get(self.main_array_name, []))
             if "sum" in vname.lower():
-                steps.append((curr_arr, f"Накопичення суми: {vname} = {self.variables[vname]} (+{val_add})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
-            elif "count" in vname.lower():
+                steps.append((curr_arr, f"Накопичення суми: {vname} = {self.variables[vname]} (+{val_add})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
+            elif "count" in vname.lower() or "size" in vname.lower():
                 self.condition_count = self.variables[vname]
-                steps.append((curr_arr, f"Підрахунок: {vname} = {self.condition_count}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.current_size = self.variables[vname]
+                steps.append((curr_arr, f"Кількість: {vname} = {self.current_size}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         target_name = self.main_array_name
@@ -1021,19 +1139,43 @@ class CppUniversalEngine:
                 target_name = aname
                 break
 
-        # 14. Робота зі змінними: temp, maxVal, симетричні пари
+        # 15. Змінні: capacity, size, temp, maxVal
         if not target_name or target_name not in self.arrays:
             if "=" in s:
                 lhs, rhs = s.split("=", 1)
                 vname = lhs.replace("*", "").split()[-1].strip()
 
+                # Фіксація місткості (capacity)
+                if "cap" in vname.lower():
+                    val_eval = int(self.eval_expression(rhs))
+                    self.variables[vname] = val_eval
+                    self.current_capacity = val_eval
+                    curr_arr = list(self.arrays.get(self.main_array_name, []))
+                    steps.append((
+                        curr_arr, 
+                        f"Визначено місткість (Capacity): {vname} = {val_eval}", 
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
+                    ))
+                    return
+
+                # Буферна змінна temp
                 if "temp" in vname.lower():
                     val_eval = self.eval_expression(rhs)
                     self.variables[vname] = val_eval
                     self.temp_val = int(val_eval)
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
                     
-                    # Визначаємо індекс для симетричного реверсу
+                    is_shift_start = bool(re.search(r"\[\s*0\s*\]|\.at\s*\(\s*0\s*\)", rhs))
+                    if is_shift_start:
+                        steps.append((
+                            curr_arr, 
+                            f"Циклічний зсув ліворуч: збереження {self.main_array_name}[0] у temp = {self.temp_val}", 
+                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, [0],
+                            self.current_capacity, self.current_size
+                        ))
+                        return
+
                     idx_match = re.search(r"\[([^\]]+)\]", rhs) or re.search(r"\.at\s*\(([^)]+)\)", rhs)
                     if idx_match:
                         first_i = int(self.eval_expression(idx_match.group(1)))
@@ -1043,14 +1185,16 @@ class CppUniversalEngine:
                             steps.append((
                                 curr_arr, 
                                 f"Реверс: Симетрична пара [{self.active_pair[0]}] та [{self.active_pair[1]}]. Збережено temp = {self.temp_val}", 
-                                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                                self.current_capacity, self.current_size
                             ))
                             return
 
                     steps.append((
                         curr_arr, 
                         f"Обмін: Збереження у буфер {vname} = {self.temp_val}", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                     return
 
@@ -1062,22 +1206,23 @@ class CppUniversalEngine:
                     self.variables[vname] = val_eval
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
 
-                    # Пошук максимуму з 1-го елемента: int maxVal = arr[0]; або arr.at(0)
                     if "max" in vname.lower():
                         self.current_max_val = int(val_eval)
                         self.max_indices = [idx for idx, x in enumerate(curr_arr) if x == self.current_max_val]
                         steps.append((
                             curr_arr, 
                             f"Ініціалізація максимуму з першого елемента: {vname} = {self.current_max_val}", 
-                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                            self.current_capacity, self.current_size
                         ))
-                    elif "count" in vname.lower() or "matched" in vname.lower():
+                    elif "count" in vname.lower() or "matched" in vname.lower() or "size" in vname.lower():
                         self.condition_count = int(val_eval)
-                        steps.append((curr_arr, f"Результат підрахунку: {vname} = {self.condition_count}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                        self.current_size = int(val_eval)
+                        steps.append((curr_arr, f"Фактична кількість елементів: {vname} = {self.current_size}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                     elif "sum" in vname.lower():
-                        steps.append((curr_arr, f"Обчислено суму: {vname} = {val_eval}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                        steps.append((curr_arr, f"Обчислено суму: {vname} = {val_eval}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
                     elif "avg" in vname.lower() or "mean" in vname.lower():
-                        steps.append((curr_arr, f"Середнє арифметичне: {vname} = {val_eval:.2f}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                        steps.append((curr_arr, f"Середнє арифметичне: {vname} = {val_eval:.2f}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         arr = self.arrays[target_name]
@@ -1091,7 +1236,7 @@ class CppUniversalEngine:
             for i in range(len(arr)):
                 old = arr[i]
                 arr[i] = val
-                steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".swap" in s:
@@ -1100,7 +1245,7 @@ class CppUniversalEngine:
                 other_name = other_m.group(1)
                 if other_name in self.arrays:
                     self.arrays[target_name], self.arrays[other_name] = self.arrays[other_name], self.arrays[target_name]
-                    steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                    steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".push_back" in s or ".emplace_back" in s:
@@ -1108,13 +1253,15 @@ class CppUniversalEngine:
             val = int(self.eval_expression(val_expr))
             if len(arr) < 25:
                 arr.append(val)
-                steps.append((list(arr), f"{target_name}.push_back({val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.current_size = len(arr)
+                steps.append((list(arr), f"{target_name}.push_back({val}) (кількість: {self.current_size})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".pop_back" in s:
             if arr:
                 rem = arr.pop()
-                steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.current_size = len(arr)
+                steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem} (кількість: {self.current_size})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".insert" in s:
@@ -1132,7 +1279,8 @@ class CppUniversalEngine:
                 pos = max(0, min(pos, len(arr)))
                 if len(arr) < 25:
                     arr.insert(pos, val)
-                    steps.append((list(arr), f"{target_name}.insert({pos}, {val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                    self.current_size = len(arr)
+                    steps.append((list(arr), f"{target_name}.insert({pos}, {val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".erase" in s:
@@ -1146,7 +1294,8 @@ class CppUniversalEngine:
                     pos = int(self.eval_expression(arg_str.split("+", 1)[1]))
             if 0 <= pos < len(arr):
                 rem = arr.pop(pos)
-                steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+                self.current_size = len(arr)
+                steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".resize" in s:
@@ -1158,15 +1307,17 @@ class CppUniversalEngine:
                 arr.append(def_val)
             while len(arr) > new_sz:
                 arr.pop()
-            steps.append((list(arr), f"{target_name}.resize({new_sz})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+            self.current_size = len(arr)
+            steps.append((list(arr), f"{target_name}.resize({new_sz})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
         if ".clear" in s:
             arr.clear()
-            steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair))
+            self.current_size = 0
+            steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.current_capacity, self.current_size))
             return
 
-        # 15. ПРИСВОЄННЯ arr[index] = val; (Підтримує і arr[i], і arr.at(i))
+        # 16. ПРИСВОЄННЯ arr[index] = val; (З ОБРОБКОЮ ЗСУВУ ЛІВОРУЧ ТА ВІДБОРУ)
         if ("[" in s and "]" in s and "=" in s) or (".at(" in s and "=" in s):
             if "[" in s:
                 lhs, rhs = s.split("=", 1)
@@ -1185,32 +1336,57 @@ class CppUniversalEngine:
                 old = arr[idx]
                 arr[idx] = val
 
-                if "temp" in rhs.lower():
+                is_shift_step = bool(re.search(r"\[\s*\w+\s*\+\s*1\s*\]|\.at\s*\(\s*\w+\s*\+\s*1\s*\)", rhs))
+                is_shift_end = ("temp" in rhs.lower() or rhs.strip() == "") and (idx == len(arr) - 1)
+
+                if is_shift_end:
                     steps.append((
                         list(arr), 
-                        f"Реверс: {target_name}[{idx}] = temp ({val}). Обмін симетричної пари завершено", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        f"Циклічний зсув: {target_name}[{idx}] = temp ({val}). Зсув ліворуч завершено!", 
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, [idx],
+                        self.current_capacity, self.current_size
+                    ))
+                    self.temp_val = None
+                    self.active_pair = None
+                elif is_shift_step:
+                    pair = [idx, min(idx + 1, len(arr) - 1)]
+                    steps.append((
+                        list(arr), 
+                        f"Зсув ліворуч: {target_name}[{idx}] = {target_name}[{idx+1}] ({val})", 
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, pair,
+                        self.current_capacity, self.current_size
+                    ))
+                elif "temp" in rhs.lower():
+                    steps.append((
+                        list(arr), 
+                        f"Обмін: {target_name}[{idx}] = temp ({val}). Завершено", 
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                     self.temp_val = None
                     self.active_pair = None
                 elif ("[" in rhs or ".at(" in rhs) and self.temp_val is not None:
                     steps.append((
                         list(arr), 
-                        f"Реверс: Переміщення {target_name}[{idx}] = {val} (симетричний елемент)", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        f"Обмін: Переміщення {target_name}[{idx}] = {val}", 
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
                 else:
                     steps.append((
                         list(arr), 
                         f"{target_name}[{idx}] = {val} (було {old})", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.current_capacity, self.current_size
                     ))
             elif idx == len(arr) and len(arr) < 25:
                 arr.append(val)
+                self.current_size = len(arr)
                 steps.append((
                     list(arr), 
-                    f"{target_name}[{idx}] = {val}", 
-                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair
+                    f"Додано: {target_name}[{idx}] = {val} (фактична кількість: {self.current_size})", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.current_capacity, self.current_size
                 ))
             return
 
@@ -1218,7 +1394,7 @@ class CppUniversalEngine:
 class CodeVisualizer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Покрокова візуалізація масивів C++")
+        self.setWindowTitle("Покрокова візуалізація масивів і векторів C++")
 
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
@@ -1296,6 +1472,8 @@ class CodeVisualizer(QWidget):
             max_val = step_data[5] if len(step_data) > 5 else None
             temp_val = step_data[6] if len(step_data) > 6 else None
             pair_indices = step_data[7] if len(step_data) > 7 else None
+            cap_metric = step_data[8] if len(step_data) > 8 else None
+            sz_metric = step_data[9] if len(step_data) > 9 else None
 
             self.anim_widget.update_variables(
                 arr_state, 
@@ -1305,7 +1483,9 @@ class CodeVisualizer(QWidget):
                 max_indices=max_indices,
                 current_max_val=max_val,
                 temp_val=temp_val,
-                pair_indices=pair_indices
+                pair_indices=pair_indices,
+                capacity_metric=cap_metric,
+                size_metric=sz_metric
             )
             self.current_step += 1
         else:
