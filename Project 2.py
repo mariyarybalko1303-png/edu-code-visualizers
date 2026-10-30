@@ -1,4 +1,3 @@
-
 import sys
 import re
 import random
@@ -134,8 +133,11 @@ class AdaptiveAnimationWidget(QWidget):
         self.block_height = 40.0
         self.spacing = 8.0
         self.base_x = 50.0
-        self.base_y = 120.0
+        self.base_y = 140.0
         self.active_animation_group = None
+
+        # Статичний елемент для відображення Суми та Середнього
+        self.metrics_item = None
 
     def reset(self):
         if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
@@ -143,6 +145,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.clear()
         self.current_array_blocks.clear()
         self.static_items.clear()
+        self.metrics_item = None
 
     def clear_static_layer(self):
         for item in self.static_items:
@@ -155,12 +158,30 @@ class AdaptiveAnimationWidget(QWidget):
 
     def update_variables(self, new_values, step_description=""):
         self.clear_static_layer()
+        
+        # Опис поточного кроку
         if step_description:
             desc_item = self.scene.addText(str(step_description))
             desc_item.setFont(QFont("Consolas", 13, QFont.Bold))
             desc_item.setDefaultTextColor(QColor("#2c3e50"))
-            desc_item.setPos(self.base_x, self.base_y - 45)
+            desc_item.setPos(self.base_x, self.base_y - 65)
             self.static_items.append(desc_item)
+
+        # Динамічне обчислення та візуалізація суми й середнього арифметичного
+        if new_values:
+            curr_sum = sum(new_values)
+            curr_avg = curr_sum / len(new_values)
+            metrics_str = f"Сума (Sum): {curr_sum}   |   Середнє (Average): {curr_avg:.2f}"
+        else:
+            metrics_str = "Сума (Sum): 0   |   Середнє (Average): 0.00"
+
+        if not self.metrics_item:
+            self.metrics_item = self.scene.addText(metrics_str)
+            self.metrics_item.setFont(QFont("Consolas", 11, QFont.Bold))
+            self.metrics_item.setDefaultTextColor(QColor("#16a085"))
+            self.metrics_item.setPos(self.base_x, self.base_y - 30)
+        else:
+            self.metrics_item.setPlainText(metrics_str)
 
         if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
             self.active_animation_group.stop()
@@ -181,11 +202,7 @@ class AdaptiveAnimationWidget(QWidget):
                 pulse_anim = CartoonAnimationHandler.animate_change(block_item, new_val, "#ff9999")
                 anim_group.addAnimation(pulse_anim)
             else:
-                # Якщо підсвічується підрахунок суми
-                if "Сума:" in step_description and f"[{i}]" in step_description:
-                    block_item.set_bg_color("#f39c12")
-                else:
-                    block_item.set_bg_color("#33ccff")
+                block_item.set_bg_color("#33ccff")
 
         if new_count > old_count:
             for i in range(old_count, new_count):
@@ -228,16 +245,6 @@ class CppIterator:
 
 
 class CppUniversalEngine:
-    """
-    Універсальний симулятор коду C++:
-    - Обчислення суми (sum, accumulate, +=) та середнього арифметичного (average, mean)
-    - Метод .at(i) з перевіркою меж діапазону (std::out_of_range)
-    - Бібліотека <iterator>: std::begin, std::end, std::next, std::prev, std::advance, std::distance
-    - Бібліотека <array>: std::array<T, N> (fill, at, front, back, swap)
-    - Статичні та динамічні масиви (new[], delete[])
-    - Вектори std::vector (push_back, pop_back, insert, erase, resize, clear)
-    - Цикли for та довільні арифметичні вирази
-    """
     def __init__(self):
         self.variables = {}
         self.iterators = {}
@@ -331,17 +338,19 @@ class CppUniversalEngine:
         if not expr:
             return 0
 
-        # std::accumulate(begin, end, init)
+        # std::accumulate(begin, end, init) з бібліотеки <numeric>
         accum_m = re.search(r"(?:std::)?accumulate\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", expr)
         if accum_m:
             it1 = self.resolve_iterator_expr(accum_m.group(1))
             it2 = self.resolve_iterator_expr(accum_m.group(2))
-            init_acc = self.eval_expression(accum_m.group(3))
-            if isinstance(it1, CppIterator) and it1.container_name in self.arrays:
-                arr = self.arrays[it1.container_name]
-                end_idx = it2.index if isinstance(it2, CppIterator) else len(arr)
-                total = init_acc + sum(arr[it1.index:end_idx])
-                expr = expr.replace(accum_m.group(0), str(total))
+            init_val = self.eval_expression(accum_m.group(3))
+            cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
+            if cname in self.arrays:
+                arr = self.arrays[cname]
+                start_i = it1.index if isinstance(it1, CppIterator) else 0
+                end_i = it2.index if isinstance(it2, CppIterator) else len(arr)
+                sum_val = init_val + sum(arr[start_i:end_i])
+                expr = expr.replace(accum_m.group(0), str(sum_val))
 
         # std::distance(first, last)
         dist_fn = re.search(r"(?:std::)?distance\s*\(([^,]+),\s*([^)]+)\)", expr)
@@ -352,14 +361,17 @@ class CppUniversalEngine:
                 val_dist = abs(it2.index - it1.index)
                 expr = expr.replace(dist_fn.group(0), str(val_dist))
 
+        # Розіменування ітераторів: *it
         for it_name, it_obj in self.iterators.items():
             if it_obj.container_name in self.arrays:
                 arr = self.arrays[it_obj.container_name]
                 curr_val = arr[it_obj.index] if 0 <= it_obj.index < len(arr) else 0
                 expr = re.sub(rf"\*\s*{it_name}\b", str(curr_val), expr)
 
+        # Вказівникова арифметика *(arr + i)
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
+        # Читання через .at(index)
         for name, arr in self.arrays.items():
             at_reads = re.findall(rf"\b{name}\.at\s*\(\s*([^)]+)\s*\)", expr)
             for raw_idx in at_reads:
@@ -367,6 +379,7 @@ class CppUniversalEngine:
                 val_at = arr[eval_i] if 0 <= eval_i < len(arr) else 0
                 expr = re.sub(rf"\b{name}\.at\s*\(\s*{re.escape(raw_idx)}\s*\)", str(val_at), expr)
 
+        # .front(), .back(), .size()
         for name, arr in self.arrays.items():
             if arr:
                 expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
@@ -375,12 +388,12 @@ class CppUniversalEngine:
             for idx, val in enumerate(arr):
                 expr = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), expr)
 
+        # Касти типів C++: (double), (float), static_cast<double>()
+        expr = re.sub(r"\(\s*(?:double|float|int)\s*\)", "", expr)
+        expr = re.sub(r"static_cast\s*<\s*(?:double|float|int)\s*>\s*\(([^)]+)\)", r"(\1)", expr)
+
         expr = re.sub(r"\brand\s*\(\s*\)", str(random.randint(0, 32767)), expr)
         expr = re.sub(r"\b\w*dist\w*\s*\(\s*\w*\s*\)", f"__random_val()", expr, flags=re.IGNORECASE)
-
-        # Касти типів C++: (double), (float), static_cast<double>(...)
-        expr = re.sub(r"\(\s*(?:double|float)\s*\)", "float", expr)
-        expr = re.sub(r"static_cast\s*<\s*(?:double|float)\s*>\s*\(([^)]+)\)", r"float(\1)", expr)
 
         env = {
             "__random_val": lambda: random.randint(self.random_min, self.random_max),
@@ -392,7 +405,7 @@ class CppUniversalEngine:
 
         try:
             res = eval(expr, {"__builtins__": {}}, env)
-            return round(res, 2) if isinstance(res, float) else res
+            return float(res) if isinstance(res, float) else int(res)
         except Exception:
             if "dist" in expr or "gen" in expr:
                 return random.randint(self.random_min, self.random_max)
@@ -487,6 +500,7 @@ class CppUniversalEngine:
             return
 
         init_part, cond_part, inc_part = [p.strip() for p in parts]
+        
         is_iter_loop = False
         loop_iter_name = ""
 
@@ -500,7 +514,7 @@ class CppUniversalEngine:
         elif "=" in init_part:
             lhs, rhs = init_part.split('=', 1)
             iter_var = lhs.split()[-1].strip()
-            self.variables[iter_var] = self.eval_expression(rhs)
+            self.variables[iter_var] = int(self.eval_expression(rhs))
 
         max_safety_iterations = 60
         it_count = 0
@@ -543,7 +557,7 @@ class CppUniversalEngine:
                 elif "+=" in inc_part:
                     vname, step_str = inc_part.split("+=", 1)
                     vname = vname.strip()
-                    self.variables[vname] = self.variables.get(vname, 0) + self.eval_expression(step_str)
+                    self.variables[vname] = self.variables.get(vname, 0) + int(self.eval_expression(step_str))
 
             it_count += 1
 
@@ -552,28 +566,7 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # Накопичення суми: sum += arr[i], sum += *it, sum += val;
-        accum_assign = re.match(r"^(\w+)\s*\+=\s*(.+)$", s)
-        if accum_assign:
-            sum_var = accum_assign.group(1)
-            added_expr = accum_assign.group(2)
-            add_val = self.eval_expression(added_expr)
-            prev_sum = self.variables.get(sum_var, 0)
-            new_sum = prev_sum + add_val
-            self.variables[sum_var] = new_sum
-
-            target_name = self.main_array_name
-            if target_name in self.arrays:
-                # Визначаємо індекс для візуального повідомлення
-                idx_m = re.search(r"\[([^\]]+)\]", added_expr)
-                idx_str = f"[{self.eval_expression(idx_m.group(1))}]" if idx_m else ""
-                steps.append((
-                    list(self.arrays[target_name]), 
-                    f"Сума: {sum_var} += {target_name}{idx_str} (+{add_val}) -> поточна {sum_var} = {new_sum}"
-                ))
-            return
-
-        # std::advance(it, n)
+        # 1. std::advance(it, n)
         advance_m = re.search(r"(?:std::)?advance\s*\(\s*(\w+)\s*,\s*([^)]+)\)", s)
         if advance_m:
             it_name = advance_m.group(1)
@@ -583,7 +576,7 @@ class CppUniversalEngine:
                 it_obj.index += (-dist if it_obj.is_reverse else dist)
             return
 
-        # Оголошення та присвоєння ітераторів
+        # 2. Оголошення та присвоєння ітераторів
         if ("iterator" in s or "auto" in s) and "=" in s and not ("vector<" in s and "::" not in s):
             lhs, rhs = s.split("=", 1)
             it_name = lhs.split()[-1].strip()
@@ -592,11 +585,11 @@ class CppUniversalEngine:
                 self.iterators[it_name] = it_obj
                 return
 
-        # Модифікація через розіменування: *it = val
+        # 3. Модифікація через розіменування ітератора: *it = val
         deref_assign = re.match(r"^\*\s*(\w+)\s*=\s*(.+)$", s)
         if deref_assign:
             it_name = deref_assign.group(1)
-            val = self.eval_expression(deref_assign.group(2))
+            val = int(self.eval_expression(deref_assign.group(2)))
             if it_name in self.iterators:
                 it_obj = self.iterators[it_name]
                 target_name = it_obj.container_name
@@ -609,7 +602,7 @@ class CppUniversalEngine:
                         steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
             return
 
-        # Інкремент / декремент ітератора
+        # 4. Інкремент / декремент ітератора
         for it_name in list(self.iterators.keys()):
             if re.match(rf"^(\+\+{it_name}|{it_name}\+\+)$", s):
                 it_obj = self.iterators[it_name]
@@ -630,7 +623,7 @@ class CppUniversalEngine:
                 it_obj.index -= (-offset if it_obj.is_reverse else offset)
                 return
 
-        # Оголошення std::array<type, size> name;
+        # 5. Оголошення std::array<type, size> name;
         array_lib_m = re.search(r"(?:std\s*::\s*)?array\s*<\s*[\w:]+\s*,\s*([^>]+)>\s*(\w+)", s)
         if array_lib_m:
             raw_sz = array_lib_m.group(1).strip()
@@ -641,7 +634,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [self.eval_expression(x) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             self.arrays[name] = [0] * sz
             for idx, val in enumerate(init_vals[:sz]):
@@ -650,7 +643,7 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # delete[] arr;
+        # 6. delete[] arr;
         delete_m = re.search(r"delete\s*\[\s*\]\s*(\w+)", s)
         if delete_m:
             target_name = delete_m.group(1)
@@ -659,7 +652,7 @@ class CppUniversalEngine:
                 steps.append(([], f"{target_name}.clear()"))
             return
 
-        # int* arr = new int[N];
+        # 7. int* arr = new int[N];
         new_m = re.search(r"(?:(?:int|double|float|auto)\s*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*\[([^\]]*)\]", s)
         if new_m:
             name = new_m.group(1)
@@ -669,7 +662,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [self.eval_expression(x) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             sz = int(self.eval_expression(raw_sz)) if raw_sz else (len(init_vals) if init_vals else 5)
             sz = min(max(sz, 0), 25)
@@ -680,7 +673,7 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # arr = temp;
+        # 8. arr = temp;
         ptr_assign = re.match(r"^(\w+)\s*=\s*(\w+)$", s)
         if ptr_assign:
             lhs = ptr_assign.group(1)
@@ -697,7 +690,7 @@ class CppUniversalEngine:
                 self.variables[lhs] = self.variables[rhs]
                 return
 
-        # vector<int>
+        # 9. vector<int>
         if "vector<" in s or "std::vector<" in s:
             decl_m = re.search(r"vector\s*<\s*\w+\s*>\s*(\w+)", s)
             if decl_m:
@@ -709,17 +702,17 @@ class CppUniversalEngine:
                 if paren_m:
                     args = [a.strip() for a in paren_m.group(1).split(',')]
                     sz = min(int(self.eval_expression(args[0])), 25)
-                    val = self.eval_expression(args[1]) if len(args) > 1 else 0
+                    val = int(self.eval_expression(args[1])) if len(args) > 1 else 0
                     self.arrays[name] = [val] * sz
                 
                 brace_m = re.search(r"\{([^}]+)\}", s)
                 if brace_m:
-                    self.arrays[name] = [self.eval_expression(x) for x in brace_m.group(1).split(',') if x.strip()][:25]
+                    self.arrays[name] = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()][:25]
 
                 steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})"))
                 return
 
-        # Статичний масив: int arr[N]
+        # 10. Статичний масив: int arr[N]
         arr_decl = re.search(r"(?:int|auto|double|float)\s+(\w+)\s*\[([^\]]*)\]", s)
         if arr_decl and "=" not in s.split("[")[0]:
             name = arr_decl.group(1)
@@ -729,7 +722,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [self.eval_expression(x) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             sz = int(self.eval_expression(raw_sz)) if raw_sz else (len(init_vals) if init_vals else 5)
             sz = min(max(sz, 0), 25)
@@ -740,14 +733,14 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
             return
 
-        # .at(idx) = val;
+        # 11. Логіка методу .at() для запису: arr.at(idx) = val; з контролем меж
         at_assign_m = re.match(r"^(\w+)\.at\s*\(\s*([^)]+)\s*\)\s*=\s*(.+)$", s)
         if at_assign_m:
             target_name = at_assign_m.group(1)
             raw_idx = at_assign_m.group(2)
             raw_val = at_assign_m.group(3)
             idx = int(self.eval_expression(raw_idx))
-            val = self.eval_expression(raw_val)
+            val = int(self.eval_expression(raw_val))
 
             if target_name in self.arrays:
                 arr = self.arrays[target_name]
@@ -759,8 +752,20 @@ class CppUniversalEngine:
                     steps.append((list(arr), f"std::out_of_range: {target_name}.at({idx}) поза межами [0, {len(arr)-1}]"))
             return
 
+        # Нормалізація вказівника та методів
         s = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)\s*=", r"\1[\2] =", s)
         s = re.sub(r"(\w+)\.front\s*\(\s*\)\s*=", r"\1[0] =", s)
+
+        # 12. Логіка суми та середнього арифметичного у C++ змінних (+= або =)
+        plus_eq_m = re.match(r"^(\w+)\s*\+=\s*(.+)$", s)
+        if plus_eq_m:
+            vname = plus_eq_m.group(1).strip()
+            val_add = self.eval_expression(plus_eq_m.group(2))
+            self.variables[vname] = self.variables.get(vname, 0) + val_add
+            curr_arr = self.arrays.get(self.main_array_name, [])
+            if "sum" in vname.lower():
+                steps.append((list(curr_arr), f"Накопичення суми: {vname} = {self.variables[vname]} (+{val_add})"))
+            return
 
         target_name = self.main_array_name
         for aname in self.arrays:
@@ -768,33 +773,21 @@ class CppUniversalEngine:
                 target_name = aname
                 break
 
-        # Оголошення та підрахунок суми / середнього арифметичного у змінних
-        if "=" in s and not (target_name and (s.startswith(target_name + ".") or s.startswith(target_name + "["))):
-            lhs, rhs = s.split("=", 1)
-            vname = lhs.replace("*", "").split()[-1].strip()
-            
-            # Якщо викликається accumulate
-            if "accumulate" in rhs:
-                val = self.eval_expression(rhs)
-                self.variables[vname] = val
-                if target_name in self.arrays:
-                    steps.append((list(self.arrays[target_name]), f"Загальна сума ({vname}): accumulate = {val}"))
-                return
-
-            it_try = self.resolve_iterator_expr(rhs)
-            if it_try:
-                self.iterators[vname] = it_try
-            else:
-                val = self.eval_expression(rhs)
-                self.variables[vname] = val
-                # Якщо це змінна середнього (average / avg / mean)
-                if any(k in vname.lower() for k in ("avg", "average", "mean")) and target_name in self.arrays:
-                    steps.append((list(self.arrays[target_name]), f"Середнє арифметичне ({vname}): {val}"))
-                elif any(k in vname.lower() for k in ("sum", "total")) and target_name in self.arrays:
-                    steps.append((list(self.arrays[target_name]), f"Загальна сума ({vname}): {val}"))
-            return
-
         if not target_name or target_name not in self.arrays:
+            if "=" in s:
+                lhs, rhs = s.split("=", 1)
+                vname = lhs.replace("*", "").split()[-1].strip()
+                it_try = self.resolve_iterator_expr(rhs)
+                if it_try:
+                    self.iterators[vname] = it_try
+                else:
+                    val_eval = self.eval_expression(rhs)
+                    self.variables[vname] = val_eval
+                    curr_arr = self.arrays.get(self.main_array_name, [])
+                    if "sum" in vname.lower():
+                        steps.append((list(curr_arr), f"Обчислено суму: {vname} = {val_eval}"))
+                    elif "avg" in vname.lower() or "mean" in vname.lower():
+                        steps.append((list(curr_arr), f"Середнє арифметичне: {vname} = {val_eval:.2f}"))
             return
 
         arr = self.arrays[target_name]
@@ -802,17 +795,17 @@ class CppUniversalEngine:
         if f"{target_name}.back()" in s and "=" in s and arr:
             s = s.replace(f"{target_name}.back()", f"{target_name}[{len(arr)-1}]")
 
-        # .fill(val)
+        # 13. .fill(val)
         if ".fill" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
-            val = self.eval_expression(val_expr)
+            val = int(self.eval_expression(val_expr))
             for i in range(len(arr)):
                 old = arr[i]
                 arr[i] = val
                 steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})"))
             return
 
-        # .swap(other)
+        # 14. .swap(other)
         if ".swap" in s:
             other_m = re.search(r"\.swap\s*\(\s*(\w+)\s*\)", s)
             if other_m:
@@ -822,23 +815,23 @@ class CppUniversalEngine:
                     steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]"))
             return
 
-        # push_back
+        # 15. push_back / emplace_back
         if ".push_back" in s or ".emplace_back" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
-            val = self.eval_expression(val_expr)
+            val = int(self.eval_expression(val_expr))
             if len(arr) < 25:
                 arr.append(val)
                 steps.append((list(arr), f"{target_name}.push_back({val})"))
             return
 
-        # pop_back
+        # 16. pop_back
         if ".pop_back" in s:
             if arr:
                 rem = arr.pop()
                 steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}"))
             return
 
-        # insert
+        # 17. insert
         if ".insert" in s:
             args_str = s[s.find("(")+1:s.rfind(")")]
             args = [a.strip() for a in args_str.split(",")]
@@ -850,14 +843,14 @@ class CppUniversalEngine:
                     pos = 0
                     if "+" in args[0]:
                         pos = int(self.eval_expression(args[0].split("+", 1)[1]))
-                val = self.eval_expression(args[1])
+                val = int(self.eval_expression(args[1]))
                 pos = max(0, min(pos, len(arr)))
                 if len(arr) < 25:
                     arr.insert(pos, val)
                     steps.append((list(arr), f"{target_name}.insert({pos}, {val})"))
             return
 
-        # erase
+        # 18. erase
         if ".erase" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             it_target = self.resolve_iterator_expr(arg_str)
@@ -872,12 +865,12 @@ class CppUniversalEngine:
                 steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}"))
             return
 
-        # resize
+        # 19. resize
         if ".resize" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             args = [a.strip() for a in arg_str.split(",")]
             new_sz = min(max(int(self.eval_expression(args[0])), 0), 25)
-            def_val = self.eval_expression(args[1]) if len(args) > 1 else 0
+            def_val = int(self.eval_expression(args[1])) if len(args) > 1 else 0
             while len(arr) < new_sz:
                 arr.append(def_val)
             while len(arr) > new_sz:
@@ -885,19 +878,19 @@ class CppUniversalEngine:
             steps.append((list(arr), f"{target_name}.resize({new_sz})"))
             return
 
-        # clear
+        # 20. clear
         if ".clear" in s:
             arr.clear()
             steps.append(([], f"{target_name}.clear()"))
             return
 
-        # Присвоєння arr[index] = val;
+        # 21. Присвоєння arr[index] = val;
         if "[" in s and "]" in s and "=" in s:
             lhs, rhs = s.split("=", 1)
             b_l = lhs.find("[")
             b_r = lhs.find("]")
             idx = int(self.eval_expression(lhs[b_l+1:b_r]))
-            val = self.eval_expression(rhs)
+            val = int(self.eval_expression(rhs))
 
             if 0 <= idx < len(arr):
                 old = arr[idx]
