@@ -853,7 +853,7 @@ class CppUniversalEngine:
 class CodeVisualizer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Покрокова візуалізація масивів і векторів C++")
+        self.setWindowTitle("Покрокова візуалізація масивів C++")
 
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
