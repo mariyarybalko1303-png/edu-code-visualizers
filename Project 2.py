@@ -136,7 +136,6 @@ class AdaptiveAnimationWidget(QWidget):
         self.base_y = 140.0
         self.active_animation_group = None
 
-        # Статичний елемент для відображення Суми та Середнього
         self.metrics_item = None
 
     def reset(self):
@@ -156,10 +155,10 @@ class AdaptiveAnimationWidget(QWidget):
     def get_target_pos(self, index):
         return QPointF(self.base_x + index * (self.block_width + self.spacing), self.base_y)
 
-    def update_variables(self, new_values, step_description=""):
+    def update_variables(self, new_values, step_description="", show_sum_avg=False, count_metric=None):
         self.clear_static_layer()
         
-        # Опис поточного кроку
+        # 1. Опис поточного кроку
         if step_description:
             desc_item = self.scene.addText(str(step_description))
             desc_item.setFont(QFont("Consolas", 13, QFont.Bold))
@@ -167,21 +166,32 @@ class AdaptiveAnimationWidget(QWidget):
             desc_item.setPos(self.base_x, self.base_y - 65)
             self.static_items.append(desc_item)
 
-        # Динамічне обчислення та візуалізація суми й середнього арифметичного
-        if new_values:
-            curr_sum = sum(new_values)
-            curr_avg = curr_sum / len(new_values)
-            metrics_str = f"Сума (Sum): {curr_sum}   |   Середнє (Average): {curr_avg:.2f}"
-        else:
-            metrics_str = "Сума (Sum): 0   |   Середнє (Average): 0.00"
+        # 2. Адаптивні метрики: відображаються лише ті, що реально присутні в коді C++
+        metrics_parts = []
+        if show_sum_avg:
+            if new_values:
+                curr_sum = sum(new_values)
+                curr_avg = curr_sum / len(new_values)
+                metrics_parts.append(f"Сума (Sum): {curr_sum}   |   Середнє (Average): {curr_avg:.2f}")
+            else:
+                metrics_parts.append("Сума (Sum): 0   |   Середнє (Average): 0.00")
 
-        if not self.metrics_item:
-            self.metrics_item = self.scene.addText(metrics_str)
-            self.metrics_item.setFont(QFont("Consolas", 11, QFont.Bold))
-            self.metrics_item.setDefaultTextColor(QColor("#16a085"))
-            self.metrics_item.setPos(self.base_x, self.base_y - 30)
+        if count_metric is not None:
+            metrics_parts.append(f"Кількість за умовою (Count): {count_metric}")
+
+        if metrics_parts:
+            metrics_str = "   |   ".join(metrics_parts)
+            if not self.metrics_item:
+                self.metrics_item = self.scene.addText(metrics_str)
+                self.metrics_item.setFont(QFont("Consolas", 11, QFont.Bold))
+                self.metrics_item.setDefaultTextColor(QColor("#16a085"))
+                self.metrics_item.setPos(self.base_x, self.base_y - 30)
+            else:
+                self.metrics_item.setPlainText(metrics_str)
+                self.metrics_item.setVisible(True)
         else:
-            self.metrics_item.setPlainText(metrics_str)
+            if self.metrics_item:
+                self.metrics_item.setVisible(False)
 
         if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
             self.active_animation_group.stop()
@@ -252,6 +262,9 @@ class CppUniversalEngine:
         self.main_array_name = "arr"
         self.random_min = 1
         self.random_max = 100
+        self.has_sum_avg = False
+        self.has_count = False
+        self.condition_count = None
 
     def clean_code(self, source):
         no_block_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
@@ -264,6 +277,16 @@ class CppUniversalEngine:
                 continue
             cleaned_lines.append(line)
         return " ".join(cleaned_lines)
+
+    def detect_features(self, code):
+        """Аналізує, які саме метрики (сума/середнє або підрахунок) присутні у C++ коді."""
+        code_lower = code.lower()
+        self.has_sum_avg = bool(
+            re.search(r"\b(sum|avg|average|mean|accumulate)\b", code_lower)
+        )
+        self.has_count = bool(
+            re.search(r"\b(count|counter|matched|count_if)\b", code_lower)
+        )
 
     def resolve_iterator_expr(self, expr_str):
         expr = expr_str.strip()
@@ -338,7 +361,36 @@ class CppUniversalEngine:
         if not expr:
             return 0
 
-        # std::accumulate(begin, end, init) з бібліотеки <numeric>
+        # std::count_if та std::count
+        count_if_m = re.search(r"(?:std::)?count_if\s*\(([^,]+),\s*([^,]+),\s*\[[^\]]*\]\s*\([^\)]*\)\s*\{?\s*return\s*([^;}]+);?\s*\}?\s*\)", expr)
+        if count_if_m:
+            it1 = self.resolve_iterator_expr(count_if_m.group(1))
+            cond_template = count_if_m.group(3).strip()
+            cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
+            if cname in self.arrays:
+                arr = self.arrays[cname]
+                matched = 0
+                for item in arr:
+                    cond_eval = re.sub(r"\b[a-zA-Z_]\w*\b", str(item), cond_template)
+                    try:
+                        if eval(cond_eval):
+                            matched += 1
+                    except Exception:
+                        pass
+                self.condition_count = matched
+                expr = expr.replace(count_if_m.group(0), str(matched))
+
+        count_m = re.search(r"(?:std::)?count\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", expr)
+        if count_m:
+            it1 = self.resolve_iterator_expr(count_m.group(1))
+            val_to_count = self.eval_expression(count_m.group(3))
+            cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
+            if cname in self.arrays:
+                matched = self.arrays[cname].count(val_to_count)
+                self.condition_count = matched
+                expr = expr.replace(count_m.group(0), str(matched))
+
+        # std::accumulate
         accum_m = re.search(r"(?:std::)?accumulate\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", expr)
         if accum_m:
             it1 = self.resolve_iterator_expr(accum_m.group(1))
@@ -352,7 +404,7 @@ class CppUniversalEngine:
                 sum_val = init_val + sum(arr[start_i:end_i])
                 expr = expr.replace(accum_m.group(0), str(sum_val))
 
-        # std::distance(first, last)
+        # std::distance
         dist_fn = re.search(r"(?:std::)?distance\s*\(([^,]+),\s*([^)]+)\)", expr)
         if dist_fn:
             it1 = self.resolve_iterator_expr(dist_fn.group(1))
@@ -361,17 +413,14 @@ class CppUniversalEngine:
                 val_dist = abs(it2.index - it1.index)
                 expr = expr.replace(dist_fn.group(0), str(val_dist))
 
-        # Розіменування ітераторів: *it
         for it_name, it_obj in self.iterators.items():
             if it_obj.container_name in self.arrays:
                 arr = self.arrays[it_obj.container_name]
                 curr_val = arr[it_obj.index] if 0 <= it_obj.index < len(arr) else 0
                 expr = re.sub(rf"\*\s*{it_name}\b", str(curr_val), expr)
 
-        # Вказівникова арифметика *(arr + i)
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        # Читання через .at(index)
         for name, arr in self.arrays.items():
             at_reads = re.findall(rf"\b{name}\.at\s*\(\s*([^)]+)\s*\)", expr)
             for raw_idx in at_reads:
@@ -379,7 +428,6 @@ class CppUniversalEngine:
                 val_at = arr[eval_i] if 0 <= eval_i < len(arr) else 0
                 expr = re.sub(rf"\b{name}\.at\s*\(\s*{re.escape(raw_idx)}\s*\)", str(val_at), expr)
 
-        # .front(), .back(), .size()
         for name, arr in self.arrays.items():
             if arr:
                 expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
@@ -388,7 +436,6 @@ class CppUniversalEngine:
             for idx, val in enumerate(arr):
                 expr = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), expr)
 
-        # Касти типів C++: (double), (float), static_cast<double>()
         expr = re.sub(r"\(\s*(?:double|float|int)\s*\)", "", expr)
         expr = re.sub(r"static_cast\s*<\s*(?:double|float|int)\s*>\s*\(([^)]+)\)", r"(\1)", expr)
 
@@ -417,9 +464,11 @@ class CppUniversalEngine:
         self.arrays.clear()
         self.main_array_name = ""
         self.random_min, self.random_max = 1, 100
+        self.condition_count = None
         steps = []
 
         code = self.clean_code(code_text)
+        self.detect_features(code)
 
         dist_match = re.search(r"uniform_int_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", code)
         if dist_match:
@@ -441,6 +490,32 @@ class CppUniversalEngine:
                 i += 1
             if i >= n:
                 break
+
+            if block_str[i:].startswith("if"):
+                if_head_match = re.match(r"if\s*\(([^)]*)\)", block_str[i:])
+                if if_head_match:
+                    condition_str = if_head_match.group(1)
+                    i += if_head_match.end()
+
+                    while i < n and block_str[i].isspace():
+                        i += 1
+                    
+                    if i < n and block_str[i] == '{':
+                        depth = 1
+                        j = i + 1
+                        while j < n and depth > 0:
+                            if block_str[j] == '{': depth += 1
+                            elif block_str[j] == '}': depth -= 1
+                            j += 1
+                        if_body = block_str[i+1:j-1]
+                        i = j
+                    else:
+                        j = block_str.find(';', i)
+                        if_body = block_str[i:j+1] if j != -1 else ""
+                        i = j + 1 if j != -1 else n
+
+                    self.run_if_condition(condition_str, if_body, steps)
+                    continue
 
             if block_str[i:].startswith("for"):
                 for_head_match = re.match(r"for\s*\(([^)]*)\)", block_str[i:])
@@ -479,6 +554,31 @@ class CppUniversalEngine:
             if stmt:
                 self.execute_statement(stmt, steps)
 
+    def run_if_condition(self, cond_expr, body_stmt, steps):
+        cond_clean = cond_expr
+        for k, v in self.variables.items():
+            cond_clean = re.sub(rf"\b{k}\b", str(v), cond_clean)
+        for name, arr in self.arrays.items():
+            cond_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), cond_clean)
+            for idx, val in enumerate(arr):
+                cond_clean = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), cond_clean)
+                cond_clean = re.sub(rf"\b{name}\.at\s*\(\s*{idx}\s*\)", str(val), cond_clean)
+
+        try:
+            cond_result = bool(eval(cond_clean))
+        except Exception:
+            cond_result = False
+
+        curr_arr = list(self.arrays.get(self.main_array_name, []))
+        cnt_val = self.variables.get("count", self.condition_count)
+
+        if cond_result:
+            self.execute_block(body_stmt, steps)
+            cnt_val = self.variables.get("count", self.condition_count)
+            steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> ТАК. Лічильник: {cnt_val}", self.has_sum_avg, cnt_val))
+        else:
+            steps.append((curr_arr, f"Перевірка: ({cond_expr}) -> НІ (пропуск). Лічильник: {cnt_val}", self.has_sum_avg, cnt_val))
+
     def run_for_loop(self, header, body, steps):
         if ":" in header and ";" not in header:
             var_part, cont_part = [p.strip() for p in header.split(":", 1)]
@@ -492,7 +592,7 @@ class CppUniversalEngine:
                     if "&" in var_part and self.variables.get(var_name) != arr[idx]:
                         old = arr[idx]
                         arr[idx] = self.variables[var_name]
-                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})"))
+                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})", self.has_sum_avg, self.condition_count))
             return
 
         parts = header.split(';')
@@ -566,7 +666,6 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # 1. std::advance(it, n)
         advance_m = re.search(r"(?:std::)?advance\s*\(\s*(\w+)\s*,\s*([^)]+)\)", s)
         if advance_m:
             it_name = advance_m.group(1)
@@ -576,7 +675,6 @@ class CppUniversalEngine:
                 it_obj.index += (-dist if it_obj.is_reverse else dist)
             return
 
-        # 2. Оголошення та присвоєння ітераторів
         if ("iterator" in s or "auto" in s) and "=" in s and not ("vector<" in s and "::" not in s):
             lhs, rhs = s.split("=", 1)
             it_name = lhs.split()[-1].strip()
@@ -585,7 +683,6 @@ class CppUniversalEngine:
                 self.iterators[it_name] = it_obj
                 return
 
-        # 3. Модифікація через розіменування ітератора: *it = val
         deref_assign = re.match(r"^\*\s*(\w+)\s*=\s*(.+)$", s)
         if deref_assign:
             it_name = deref_assign.group(1)
@@ -599,10 +696,9 @@ class CppUniversalEngine:
                     if 0 <= idx < len(arr):
                         old = arr[idx]
                         arr[idx] = val
-                        steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
+                        steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})", self.has_sum_avg, self.condition_count))
             return
 
-        # 4. Інкремент / декремент ітератора
         for it_name in list(self.iterators.keys()):
             if re.match(rf"^(\+\+{it_name}|{it_name}\+\+)$", s):
                 it_obj = self.iterators[it_name]
@@ -623,7 +719,6 @@ class CppUniversalEngine:
                 it_obj.index -= (-offset if it_obj.is_reverse else offset)
                 return
 
-        # 5. Оголошення std::array<type, size> name;
         array_lib_m = re.search(r"(?:std\s*::\s*)?array\s*<\s*[\w:]+\s*,\s*([^>]+)>\s*(\w+)", s)
         if array_lib_m:
             raw_sz = array_lib_m.group(1).strip()
@@ -640,19 +735,17 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
+            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]", self.has_sum_avg, self.condition_count))
             return
 
-        # 6. delete[] arr;
         delete_m = re.search(r"delete\s*\[\s*\]\s*(\w+)", s)
         if delete_m:
             target_name = delete_m.group(1)
             if target_name in self.arrays:
                 self.arrays[target_name].clear()
-                steps.append(([], f"{target_name}.clear()"))
+                steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count))
             return
 
-        # 7. int* arr = new int[N];
         new_m = re.search(r"(?:(?:int|double|float|auto)\s*\*\s*)?(\w+)\s*=\s*new\s+\w+\s*\[([^\]]*)\]", s)
         if new_m:
             name = new_m.group(1)
@@ -670,10 +763,9 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
+            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]", self.has_sum_avg, self.condition_count))
             return
 
-        # 8. arr = temp;
         ptr_assign = re.match(r"^(\w+)\s*=\s*(\w+)$", s)
         if ptr_assign:
             lhs = ptr_assign.group(1)
@@ -681,7 +773,7 @@ class CppUniversalEngine:
             if rhs in self.arrays:
                 self.arrays[lhs] = list(self.arrays[rhs])
                 self.main_array_name = lhs
-                steps.append((list(self.arrays[lhs]), f"Оголошено масив: {lhs}[{len(self.arrays[lhs])}]"))
+                steps.append((list(self.arrays[lhs]), f"Оголошено масив: {lhs}[{len(self.arrays[lhs])}]", self.has_sum_avg, self.condition_count))
                 return
             elif rhs in self.iterators:
                 self.iterators[lhs] = self.iterators[rhs].clone()
@@ -690,7 +782,6 @@ class CppUniversalEngine:
                 self.variables[lhs] = self.variables[rhs]
                 return
 
-        # 9. vector<int>
         if "vector<" in s or "std::vector<" in s:
             decl_m = re.search(r"vector\s*<\s*\w+\s*>\s*(\w+)", s)
             if decl_m:
@@ -709,10 +800,9 @@ class CppUniversalEngine:
                 if brace_m:
                     self.arrays[name] = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()][:25]
 
-                steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})"))
+                steps.append((list(self.arrays[name]), f"Оголошено vector: {name} (розмір {len(self.arrays[name])})", self.has_sum_avg, self.condition_count))
                 return
 
-        # 10. Статичний масив: int arr[N]
         arr_decl = re.search(r"(?:int|auto|double|float)\s+(\w+)\s*\[([^\]]*)\]", s)
         if arr_decl and "=" not in s.split("[")[0]:
             name = arr_decl.group(1)
@@ -730,10 +820,9 @@ class CppUniversalEngine:
             for idx, val in enumerate(init_vals[:sz]):
                 self.arrays[name][idx] = val
 
-            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]"))
+            steps.append((list(self.arrays[name]), f"Оголошено масив: {name}[{sz}]", self.has_sum_avg, self.condition_count))
             return
 
-        # 11. Логіка методу .at() для запису: arr.at(idx) = val; з контролем меж
         at_assign_m = re.match(r"^(\w+)\.at\s*\(\s*([^)]+)\s*\)\s*=\s*(.+)$", s)
         if at_assign_m:
             target_name = at_assign_m.group(1)
@@ -747,24 +836,33 @@ class CppUniversalEngine:
                 if 0 <= idx < len(arr):
                     old = arr[idx]
                     arr[idx] = val
-                    steps.append((list(arr), f"{target_name}.at({idx}) = {val} (було {old})"))
+                    steps.append((list(arr), f"{target_name}.at({idx}) = {val} (було {old})", self.has_sum_avg, self.condition_count))
                 else:
-                    steps.append((list(arr), f"std::out_of_range: {target_name}.at({idx}) поза межами [0, {len(arr)-1}]"))
+                    steps.append((list(arr), f"std::out_of_range: {target_name}.at({idx}) поза межами", self.has_sum_avg, self.condition_count))
             return
 
-        # Нормалізація вказівника та методів
         s = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)\s*=", r"\1[\2] =", s)
         s = re.sub(r"(\w+)\.front\s*\(\s*\)\s*=", r"\1[0] =", s)
 
-        # 12. Логіка суми та середнього арифметичного у C++ змінних (+= або =)
+        for cnt_alias in ("count", "counter", "matched"):
+            if re.match(rf"^(\+\+{cnt_alias}|{cnt_alias}\+\+)$", s):
+                self.variables[cnt_alias] = self.variables.get(cnt_alias, 0) + 1
+                self.condition_count = self.variables[cnt_alias]
+                curr_arr = list(self.arrays.get(self.main_array_name, []))
+                steps.append((curr_arr, f"Підрахунок: {cnt_alias} = {self.condition_count} (+1)", self.has_sum_avg, self.condition_count))
+                return
+
         plus_eq_m = re.match(r"^(\w+)\s*\+=\s*(.+)$", s)
         if plus_eq_m:
             vname = plus_eq_m.group(1).strip()
             val_add = self.eval_expression(plus_eq_m.group(2))
             self.variables[vname] = self.variables.get(vname, 0) + val_add
-            curr_arr = self.arrays.get(self.main_array_name, [])
+            curr_arr = list(self.arrays.get(self.main_array_name, []))
             if "sum" in vname.lower():
-                steps.append((list(curr_arr), f"Накопичення суми: {vname} = {self.variables[vname]} (+{val_add})"))
+                steps.append((curr_arr, f"Накопичення суми: {vname} = {self.variables[vname]} (+{val_add})", self.has_sum_avg, self.condition_count))
+            elif "count" in vname.lower():
+                self.condition_count = self.variables[vname]
+                steps.append((curr_arr, f"Підрахунок: {vname} = {self.condition_count}", self.has_sum_avg, self.condition_count))
             return
 
         target_name = self.main_array_name
@@ -783,11 +881,14 @@ class CppUniversalEngine:
                 else:
                     val_eval = self.eval_expression(rhs)
                     self.variables[vname] = val_eval
-                    curr_arr = self.arrays.get(self.main_array_name, [])
-                    if "sum" in vname.lower():
-                        steps.append((list(curr_arr), f"Обчислено суму: {vname} = {val_eval}"))
+                    curr_arr = list(self.arrays.get(self.main_array_name, []))
+                    if "count" in vname.lower() or "matched" in vname.lower():
+                        self.condition_count = int(val_eval)
+                        steps.append((curr_arr, f"Результат підрахунку: {vname} = {self.condition_count}", self.has_sum_avg, self.condition_count))
+                    elif "sum" in vname.lower():
+                        steps.append((curr_arr, f"Обчислено суму: {vname} = {val_eval}", self.has_sum_avg, self.condition_count))
                     elif "avg" in vname.lower() or "mean" in vname.lower():
-                        steps.append((list(curr_arr), f"Середнє арифметичне: {vname} = {val_eval:.2f}"))
+                        steps.append((curr_arr, f"Середнє арифметичне: {vname} = {val_eval:.2f}", self.has_sum_avg, self.condition_count))
             return
 
         arr = self.arrays[target_name]
@@ -795,43 +896,38 @@ class CppUniversalEngine:
         if f"{target_name}.back()" in s and "=" in s and arr:
             s = s.replace(f"{target_name}.back()", f"{target_name}[{len(arr)-1}]")
 
-        # 13. .fill(val)
         if ".fill" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
             val = int(self.eval_expression(val_expr))
             for i in range(len(arr)):
                 old = arr[i]
                 arr[i] = val
-                steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})"))
+                steps.append((list(arr), f"{target_name}[{i}] = {val} (було {old})", self.has_sum_avg, self.condition_count))
             return
 
-        # 14. .swap(other)
         if ".swap" in s:
             other_m = re.search(r"\.swap\s*\(\s*(\w+)\s*\)", s)
             if other_m:
                 other_name = other_m.group(1)
                 if other_name in self.arrays:
                     self.arrays[target_name], self.arrays[other_name] = self.arrays[other_name], self.arrays[target_name]
-                    steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]"))
+                    steps.append((list(self.arrays[target_name]), f"Оголошено масив: {target_name}[{len(self.arrays[target_name])}]", self.has_sum_avg, self.condition_count))
             return
 
-        # 15. push_back / emplace_back
         if ".push_back" in s or ".emplace_back" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
             val = int(self.eval_expression(val_expr))
             if len(arr) < 25:
                 arr.append(val)
-                steps.append((list(arr), f"{target_name}.push_back({val})"))
+                steps.append((list(arr), f"{target_name}.push_back({val})", self.has_sum_avg, self.condition_count))
             return
 
-        # 16. pop_back
         if ".pop_back" in s:
             if arr:
                 rem = arr.pop()
-                steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}"))
+                steps.append((list(arr), f"{target_name}.pop_back(): видалено {rem}", self.has_sum_avg, self.condition_count))
             return
 
-        # 17. insert
         if ".insert" in s:
             args_str = s[s.find("(")+1:s.rfind(")")]
             args = [a.strip() for a in args_str.split(",")]
@@ -847,10 +943,9 @@ class CppUniversalEngine:
                 pos = max(0, min(pos, len(arr)))
                 if len(arr) < 25:
                     arr.insert(pos, val)
-                    steps.append((list(arr), f"{target_name}.insert({pos}, {val})"))
+                    steps.append((list(arr), f"{target_name}.insert({pos}, {val})", self.has_sum_avg, self.condition_count))
             return
 
-        # 18. erase
         if ".erase" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             it_target = self.resolve_iterator_expr(arg_str)
@@ -862,10 +957,9 @@ class CppUniversalEngine:
                     pos = int(self.eval_expression(arg_str.split("+", 1)[1]))
             if 0 <= pos < len(arr):
                 rem = arr.pop(pos)
-                steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}"))
+                steps.append((list(arr), f"{target_name}.erase([{pos}]): видалено {rem}", self.has_sum_avg, self.condition_count))
             return
 
-        # 19. resize
         if ".resize" in s:
             arg_str = s[s.find("(")+1:s.rfind(")")].strip()
             args = [a.strip() for a in arg_str.split(",")]
@@ -875,16 +969,14 @@ class CppUniversalEngine:
                 arr.append(def_val)
             while len(arr) > new_sz:
                 arr.pop()
-            steps.append((list(arr), f"{target_name}.resize({new_sz})"))
+            steps.append((list(arr), f"{target_name}.resize({new_sz})", self.has_sum_avg, self.condition_count))
             return
 
-        # 20. clear
         if ".clear" in s:
             arr.clear()
-            steps.append(([], f"{target_name}.clear()"))
+            steps.append(([], f"{target_name}.clear()", self.has_sum_avg, self.condition_count))
             return
 
-        # 21. Присвоєння arr[index] = val;
         if "[" in s and "]" in s and "=" in s:
             lhs, rhs = s.split("=", 1)
             b_l = lhs.find("[")
@@ -895,10 +987,10 @@ class CppUniversalEngine:
             if 0 <= idx < len(arr):
                 old = arr[idx]
                 arr[idx] = val
-                steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})"))
+                steps.append((list(arr), f"{target_name}[{idx}] = {val} (було {old})", self.has_sum_avg, self.condition_count))
             elif idx == len(arr) and len(arr) < 25:
                 arr.append(val)
-                steps.append((list(arr), f"{target_name}[{idx}] = {val}"))
+                steps.append((list(arr), f"{target_name}[{idx}] = {val}", self.has_sum_avg, self.condition_count))
             return
 
 
@@ -974,8 +1066,18 @@ class CodeVisualizer(QWidget):
 
     def process_next_step(self):
         if self.current_step < len(self.steps_queue):
-            arr_state, desc = self.steps_queue[self.current_step]
-            self.anim_widget.update_variables(arr_state, step_description=desc)
+            step_data = self.steps_queue[self.current_step]
+            arr_state = step_data[0]
+            desc = step_data[1]
+            show_sum_avg = step_data[2] if len(step_data) > 2 else False
+            cnt_metric = step_data[3] if len(step_data) > 3 else None
+
+            self.anim_widget.update_variables(
+                arr_state, 
+                step_description=desc, 
+                show_sum_avg=show_sum_avg, 
+                count_metric=cnt_metric
+            )
             self.current_step += 1
         else:
             self.timer.stop()
