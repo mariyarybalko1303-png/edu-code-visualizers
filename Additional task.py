@@ -601,7 +601,7 @@ class CodeRunner(QThread):
 class AnimatedArrayBlock(QGraphicsObject):
     THEMES = {
         "normal": {"bg": "#68D391", "border": "#22543D", "text": "#000000", "width": 1.8},
-        "active": {"bg": "#ECC94B", "border": "#B7791F", "text": "#000000", "width": 2.6},      # Активний лічильник / індекс
+        "active": {"bg": "#ECC94B", "border": "#B7791F", "text": "#000000", "width": 2.6},      # Активний індекс
         "selected": {"bg": "#ED8936", "border": "#C05621", "text": "#000000", "width": 2.6},    # Опорний / min_index
         "match": {"bg": "#63B3ED", "border": "#2B6CB0", "text": "#000000", "width": 2.6},       # Знайдений елемент
     }
@@ -629,13 +629,12 @@ class AnimatedArrayBlock(QGraphicsObject):
         self.border_width = theme["width"]
 
     def boundingRect(self) -> QRectF:
-        # Прямокутник і простір під індекс
         return QRectF(-4, -4, self.w + 8, self.h + 28)
 
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Чіткий прямокутний блок (прямокутник масиву як у ТЗ)
+        # Прямокутний блок масиву (строгий прямокутник за ТЗ)
         rect = QRectF(0, 0, self.w, self.h)
         painter.setPen(QPen(self.border_color, self.border_width))
         painter.setBrush(QBrush(self.bg_color))
@@ -1408,6 +1407,9 @@ class MainWindow(QMainWindow):
 
         self.apply_mdpu_theme()
 
+        # Запуск із відкритою активною робочою вкладкою без сторонніх прикладів коду
+        self.new_tab(content="", filepath=None)
+
     def init_menus(self):
         file_menu = self.menuBar().addMenu("📂 Файл")
         file_menu.addAction("🆕 Новий файл", self.new_tab)
@@ -1422,19 +1424,6 @@ class MainWindow(QMainWindow):
 
         run_menu = self.menuBar().addMenu("▶ Запуск")
         run_menu.addAction("🚀 Запустити код", self.run_code)
-
-        learning_menu = self.menuBar().addMenu("📚 Навчання")
-        learning_menu.addAction("Вступ до Python", lambda: self.show_lesson("intro"))
-        learning_menu.addAction("Змінні та типи даних", lambda: self.show_lesson("variables"))
-        learning_menu.addAction("Умовні оператори", lambda: self.show_lesson("conditionals"))
-        learning_menu.addAction("Цикли та лічильники", lambda: self.show_lesson("loops"))
-        learning_menu.addAction("Функції", lambda: self.show_lesson("functions"))
-        learning_menu.addAction("Списки та масиви", lambda: self.show_lesson("lists"))
-        learning_menu.addAction("Словники (dict)", lambda: self.show_lesson("dictionaries"))
-        learning_menu.addAction("Обробка винятків", lambda: self.show_lesson("exceptions"))
-        learning_menu.addAction("Класи і об'єкти (ООП)", lambda: self.show_lesson("classes"))
-        learning_menu.addAction("Модулі та пакети", lambda: self.show_lesson("modules"))
-        learning_menu.addAction("Файли та I/O", lambda: self.show_lesson("files"))
 
     def apply_mdpu_theme(self):
         palette = QPalette()
@@ -1493,19 +1482,6 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    def show_lesson(self, lesson_name):
-        lesson_content = self.get_lesson_content(lesson_name)
-        QMessageBox.information(self, f"Урок: {lesson_name.capitalize()}", lesson_content)
-
-    def get_lesson_content(self, lesson_name):
-        lessons = {
-            "intro": "Ласкаво просимо до Python!\n\nPython — проста й потужна мова.",
-            "loops": "Цикли (for / while):\n\nfor i in range(5):\n    print(f'Крок №{i}')",
-            "lists": "Списки:\n\narr = [10, 20, 30]\nprint(arr[0])",
-            "classes": "Класи та спадкування:\n\nclass Animal:\n    pass\n\nclass Cat(Animal):\n    pass",
-        }
-        return lessons.get(lesson_name, "Матеріал готується.")
-
     def create_new_file_in_project(self):
         if not hasattr(self, 'project_path') or not self.project_path:
             QMessageBox.warning(self, "⚠️ Немає проєкту", "Спочатку створіть або відкрийте проєкт.")
@@ -1528,6 +1504,8 @@ class MainWindow(QMainWindow):
             if content:
                 editor.setPlainText(content)
             self.file_paths[editor] = None
+
+        editor.setFocus()
 
     def current_editor(self):
         widget = self.tab_widget.currentWidget()
@@ -1619,6 +1597,10 @@ class MainWindow(QMainWindow):
         self.tab_widget.removeTab(index)
         self.file_paths.pop(editor, None)
         self.modified_tabs.discard(editor)
+
+        # Якщо закрито всі вкладки — відкриваємо чисту нову робочу вкладку
+        if self.tab_widget.count() == 0:
+            self.new_tab()
 
     def run_code(self):
         editor = self.current_editor()
