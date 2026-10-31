@@ -9,6 +9,8 @@ import time
 import json
 import shutil
 import traceback
+import queue
+import threading
 
 # --- Налаштування контексту до створення QApplication ---
 from PyQt6.QtCore import Qt, QCoreApplication
@@ -29,7 +31,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QAction, QFont, QColor, QPainter, QPainterPath, QPolygonF, QTextCursor, QTextCharFormat, QSyntaxHighlighter,
     QPixmap, QPen, QBrush, QPalette,
-    QFileSystemModel, QWheelEvent
+    QFileSystemModel, QWheelEvent, QKeyEvent
 )
 from PyQt6.QtCore import (
     QTimer, QSize, QRect, QRectF, QPoint, QPointF, QDir, QUrl, pyqtSignal,
@@ -427,12 +429,13 @@ class CodeEditor(QPlainTextEdit):
         return code[i + 1:pos]
 
 
-# --- Потоковий виконавець коду ---
+# --- Потоковий виконавець коду з підтримкою інтерактивного введення input() ---
 class CodeRunner(QThread):
     output_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal()
     variable_update_signal = pyqtSignal(dict, dict)
+    input_requested_signal = pyqtSignal(str)
 
     def __init__(self, code, step_delay=0.45):
         super().__init__()
@@ -441,11 +444,17 @@ class CodeRunner(QThread):
         self.running = True
         self.paused = False
 
+        self.input_queue = queue.Queue()
+        self.waiting_for_input = False
+
         self.meta_info = {
             "has_loops": False,
             "classes": {},
             "relations": []
         }
+
+    def provide_input(self, text: str):
+        self.input_queue.put(text)
 
     def pause(self):
         self.paused = True
@@ -455,6 +464,7 @@ class CodeRunner(QThread):
 
     def stop(self):
         self.running = False
+        self.input_queue.put("")
 
     def _analyze_and_instrument(self, tree: ast.AST) -> ast.AST:
         class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
@@ -470,7 +480,6 @@ class CodeRunner(QThread):
                         base_name = node.bases[0].id
                 self.meta_info["classes"][node.name] = base_name
 
-                # Виявлення агрегації/композиції через виклики та анотації інших класів
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
                         called = sub.func.id
@@ -571,7 +580,36 @@ class CodeRunner(QThread):
                         time.sleep(0.05)
                     time.sleep(self.step_delay / sleep_steps)
 
+        # Перевизначення вбудованого input() для прямого введення у вікно результату
+        def custom_input(prompt=""):
+            if not self.running:
+                raise KeyboardInterrupt("Execution stopped")
+
+            output = sys.stdout.getvalue()
+            if output:
+                self.output_signal.emit(output)
+                sys.stdout.seek(0)
+                sys.stdout.truncate(0)
+
+            prompt_str = str(prompt)
+            self.waiting_for_input = True
+            self.input_requested_signal.emit(prompt_str)
+
+            while self.running:
+                try:
+                    user_val = self.input_queue.get(timeout=0.08)
+                    self.waiting_for_input = False
+                    return user_val
+                except queue.Empty:
+                    if not self.running:
+                        self.waiting_for_input = False
+                        raise KeyboardInterrupt("Execution stopped")
+
+            self.waiting_for_input = False
+            return ""
+
         glob["__universal_step_hook__"] = universal_step_hook
+        glob["input"] = custom_input
 
         try:
             self.progress_signal.emit(20)
@@ -617,7 +655,6 @@ class AnimatedArrayBlock(QGraphicsObject):
         self._apply_theme("normal")
         self.index_color = QColor("#C53030")
 
-        # Центр трансформацій для пружного зростання / пульсації прямокутника
         self.setTransformOriginPoint(self.w / 2.0, self.h / 2.0)
 
     def _apply_theme(self, theme_key: str):
@@ -634,18 +671,15 @@ class AnimatedArrayBlock(QGraphicsObject):
     def paint(self, painter: QPainter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Прямокутний блок масиву (строгий прямокутник за ТЗ)
         rect = QRectF(0, 0, self.w, self.h)
         painter.setPen(QPen(self.border_color, self.border_width))
         painter.setBrush(QBrush(self.bg_color))
         painter.drawRect(rect)
 
-        # Текст значення по центру прямокутника
         painter.setPen(self.text_color)
         painter.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(self.value))
 
-        # Окремий підпис індексу під прямокутником [idx]
         painter.setPen(self.index_color)
         painter.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
         idx_rect = QRectF(0, self.h + 2, self.w, 18)
@@ -696,12 +730,9 @@ class AdaptiveAnimationWidget(QWidget):
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.view.setStyleSheet("background-color: #ffffff; border: 1px solid #cbd5e0; border-radius: 6px;")
 
-        # Крок 2 ТЗ: Механізм відстеження стану графічних прямокутників масиву
         self.current_array_blocks = []
         self.array_title_item = None
         self.active_animations = []
-
-        # Статичний шар (блок-схеми, дерево класів, стек змінних)
         self.static_items = []
 
         layout = QVBoxLayout()
@@ -710,7 +741,6 @@ class AdaptiveAnimationWidget(QWidget):
         self.setLayout(layout)
 
     def _clear_static_items(self):
-        """Очищує статичні шари, не видаляючи анімовані прямокутники масиву."""
         for item in self.static_items:
             if item.scene() == self.scene:
                 self.scene.removeItem(item)
@@ -837,7 +867,6 @@ class AdaptiveAnimationWidget(QWidget):
         level_gap = 55
         rect_map = {}
 
-        # Рівень 0: Object
         root_name = "Object"
         obj_x = cx - box_w / 2
         obj_rect = QGraphicsRectItem(obj_x, start_y, box_w, box_h)
@@ -855,7 +884,6 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(t_obj)
         self.static_items.append(t_obj)
 
-        # Рівень 1: Базовий клас
         user_bases = [cls for cls in classes_dict.keys() if classes_dict[cls].lower() == "object" or cls in roots]
         if not user_bases:
             user_bases = list(classes_dict.keys())[:1]
@@ -880,7 +908,6 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(t_base)
         self.static_items.append(t_base)
 
-        # Рівень 2: Нащадки
         subclasses = [cls for cls, parent in classes_dict.items() if parent == base_name or (cls != base_name and parent.lower() != "object")]
         if not subclasses:
             subclasses = [cls for cls in classes_dict.keys() if cls != base_name]
@@ -956,14 +983,12 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(t_leg2)
 
     def _sync_array_blocks(self, array_name: str, new_values: list, cx: int, y: int, highlighted_indices: dict):
-        """Впровадження ТЗ: плавна динаміка прямокутників без повного перемальовування."""
         arr_len = len(new_values)
         elem_w = 68
         elem_h = 42
         total_w = max(arr_len * elem_w, 100)
         start_x = cx - total_w / 2
 
-        # Заголовок масиву
         title_text = f"Масив / Список: {array_name} (довжина {arr_len})"
         if not self.array_title_item:
             self.array_title_item = QGraphicsTextItem(title_text)
@@ -976,7 +1001,6 @@ class AdaptiveAnimationWidget(QWidget):
 
         old_len = len(self.current_array_blocks)
 
-        # Сценарій Б: Видалення (pop)
         if old_len > arr_len:
             removed_blocks = self.current_array_blocks[arr_len:]
             self.current_array_blocks = self.current_array_blocks[:arr_len]
@@ -1010,7 +1034,6 @@ class AdaptiveAnimationWidget(QWidget):
                 self.active_animations.append(anim_group)
                 anim_group.start()
 
-        # Оновлення існуючих прямокутників та Сценарій В: Зміна / Індексація (Пульсація)
         for idx in range(min(old_len, arr_len)):
             block = self.current_array_blocks[idx]
             block.set_index(idx)
@@ -1030,7 +1053,6 @@ class AdaptiveAnimationWidget(QWidget):
             highlight_theme = highlighted_indices.get(idx, "normal")
             block.set_theme(highlight_theme)
 
-            # Пульсація при зміні значення або активному стані
             if val_changed or highlight_theme != "normal":
                 block.set_value(new_values[idx])
                 
@@ -1053,7 +1075,6 @@ class AdaptiveAnimationWidget(QWidget):
                 seq_anim.finished.connect(lambda a=seq_anim: self.active_animations.remove(a) if a in self.active_animations else None)
                 seq_anim.start()
 
-        # Сценарій А: Додавання (push_back) прямокутника
         if arr_len > old_len:
             for idx in range(old_len, arr_len):
                 val = new_values[idx]
@@ -1086,7 +1107,6 @@ class AdaptiveAnimationWidget(QWidget):
         cx = max(380, self.view.width() // 2)
         y = 30
 
-        # Виявлення індексів виділення та їх кольорових статусів
         highlight_map = {}
         for var_name in ("i", "j", "k", "current_idx"):
             if var_name in variables and isinstance(variables[var_name], int):
@@ -1100,7 +1120,6 @@ class AdaptiveAnimationWidget(QWidget):
             if var_name in variables and isinstance(variables[var_name], int):
                 highlight_map[variables[var_name]] = "match"
 
-        # 1. ВЕРХНЯ ЧАСТИНА: Прямокутний анімований масив
         list_entry = next(((k, v) for k, v in variables.items() if isinstance(v, list)), None)
         if list_entry:
             arr_name, arr_val = list_entry
@@ -1116,7 +1135,6 @@ class AdaptiveAnimationWidget(QWidget):
                 self.scene.removeItem(self.array_title_item)
                 self.array_title_item = None
 
-        # 2. НИЖНЯ ЧАСТИНА: АДАПТИВНИЙ РЕЖИМ
         if has_classes:
             title = QGraphicsTextItem("Ієрархія класів (ООП)")
             title.setDefaultTextColor(QColor("#004085"))
@@ -1319,17 +1337,73 @@ class AdaptiveAnimationWidget(QWidget):
                 y += var_h + spacing
 
 
-# --- Поле виведення результатів консолі ---
+# --- Інтерактивне вікно результату консолі (термінал з можливістю друку прямо в результат) ---
 class OutputTextEdit(QPlainTextEdit):
+    input_submitted = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setReadOnly(True)
+        self.waiting_for_input = False
+        self.prompt_pos = 0
         self.setStyleSheet("""
             background-color: #1e1e1e;
             color: #bbbbbb;
             font: 10pt Consolas;
             border-top: 1px solid #444;
         """)
+
+    def append_output(self, text: str):
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        self.insertPlainText(text)
+        self.ensureCursorVisible()
+
+    def start_input_session(self, prompt: str):
+        self.waiting_for_input = True
+        self.setReadOnly(False)
+        self.moveCursor(QTextCursor.MoveOperation.End)
+        if prompt:
+            self.insertPlainText(prompt)
+        self.prompt_pos = self.textCursor().position()
+        self.ensureCursorVisible()
+        self.setFocus()
+
+    def stop_input_session(self):
+        self.waiting_for_input = False
+        self.setReadOnly(True)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if not self.waiting_for_input:
+            super().keyPressEvent(event)
+            return
+
+        cursor = self.textCursor()
+
+        # Натискання Enter — відправка введеного значення у виконуваний код
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            doc_text = self.toPlainText()
+            user_input = doc_text[self.prompt_pos:]
+            self.stop_input_session()
+            self.append_output("\n")
+            self.input_submitted.emit(user_input)
+            event.accept()
+            return
+
+        # Захист від видалення тексту промпту за допомогою Backspace
+        if event.key() == Qt.Key.Key_Backspace:
+            if cursor.position() <= self.prompt_pos:
+                event.accept()
+                return
+
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Up):
+            if cursor.position() <= self.prompt_pos:
+                event.accept()
+                return
+
+        if cursor.position() < self.prompt_pos:
+            self.moveCursor(QTextCursor.MoveOperation.End)
+
+        super().keyPressEvent(event)
 
 
 # --- Головне вікно додатку ---
@@ -1345,6 +1419,8 @@ class MainWindow(QMainWindow):
         self.tab_widget.currentChanged.connect(self.update_title_bar)
 
         self.output = OutputTextEdit()
+        self.output.input_submitted.connect(self.handle_direct_user_input)
+
         self.animation_widget = AdaptiveAnimationWidget()
         self.file_paths = {}
         self.modified_tabs = set()
@@ -1407,7 +1483,7 @@ class MainWindow(QMainWindow):
 
         self.apply_mdpu_theme()
 
-        # Запуск із відкритою активною робочою вкладкою без сторонніх прикладів коду
+        # Запуск із відкритою робочою вкладкою, без сторонніх прикладів коду
         self.new_tab(content="", filepath=None)
 
     def init_menus(self):
@@ -1598,7 +1674,6 @@ class MainWindow(QMainWindow):
         self.file_paths.pop(editor, None)
         self.modified_tabs.discard(editor)
 
-        # Якщо закрито всі вкладки — відкриваємо чисту нову робочу вкладку
         if self.tab_widget.count() == 0:
             self.new_tab()
 
@@ -1608,17 +1683,23 @@ class MainWindow(QMainWindow):
             return
         code = editor.toPlainText()
         self.output.clear()
+        self.output.stop_input_session()
         self.progress_bar.setVisible(True)
         self.run_button.setEnabled(False)
         self.pause_button.setEnabled(True)
         self.resume_button.setEnabled(False)
 
         self.runner = CodeRunner(code, step_delay=0.45)
-        self.runner.output_signal.connect(self.output.appendPlainText)
+        self.runner.output_signal.connect(self.output.append_output)
         self.runner.progress_signal.connect(self.progress_bar.setValue)
         self.runner.finished_signal.connect(self.run_finished)
         self.runner.variable_update_signal.connect(self.animation_widget.update_variables)
+        self.runner.input_requested_signal.connect(self.output.start_input_session)
         self.runner.start()
+
+    def handle_direct_user_input(self, user_val: str):
+        if hasattr(self, "runner") and self.runner.isRunning():
+            self.runner.provide_input(user_val)
 
     def run_finished(self):
         self.run_button.setEnabled(True)
@@ -1626,6 +1707,7 @@ class MainWindow(QMainWindow):
         self.resume_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
+        self.output.stop_input_session()
 
     def pause_code(self):
         if hasattr(self, "runner"):
