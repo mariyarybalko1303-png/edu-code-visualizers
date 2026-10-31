@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QListView, QGraphicsView, QGraphicsScene,
     QSplitter, QTabWidget, QToolBar, QLabel, QTextEdit,
     QInputDialog, QFileDialog, QMessageBox, QProgressBar, QDockWidget, QTreeView,
+    QGraphicsObject,
 )
 from PyQt6.QtGui import (
     QAction, QFont, QColor, QPainter, QPainterPath, QPolygonF, QTextCursor, QTextCharFormat, QSyntaxHighlighter,
@@ -31,8 +32,9 @@ from PyQt6.QtGui import (
     QFileSystemModel, QWheelEvent
 )
 from PyQt6.QtCore import (
-    QTimer, QSize, QRect, QPoint, QPointF, QDir, QUrl, pyqtSignal,
+    QTimer, QSize, QRect, QRectF, QPoint, QPointF, QDir, QUrl, pyqtSignal,
     QThread, QRegularExpression, QStringListModel,
+    QPropertyAnimation, QParallelAnimationGroup, QSequentialAnimationGroup, QEasingCurve
 )
 
 # --- Зовнішні бібліотеки ---
@@ -595,6 +597,83 @@ class CodeRunner(QThread):
             self.finished_signal.emit()
 
 
+# --- Крок 1 ТЗ: Клас прямокутного динамічного блоку масиву ---
+class AnimatedArrayBlock(QGraphicsObject):
+    THEMES = {
+        "normal": {"bg": "#68D391", "border": "#22543D", "text": "#000000", "width": 1.8},
+        "active": {"bg": "#ECC94B", "border": "#B7791F", "text": "#000000", "width": 2.6},      # Активний лічильник / індекс
+        "selected": {"bg": "#ED8936", "border": "#C05621", "text": "#000000", "width": 2.6},    # Опорний / min_index
+        "match": {"bg": "#63B3ED", "border": "#2B6CB0", "text": "#000000", "width": 2.6},       # Знайдений елемент
+    }
+
+    def __init__(self, value, index, width=68, height=42, parent=None):
+        super().__init__(parent)
+        self.value = value
+        self.index = index
+        self.w = float(width)
+        self.h = float(height)
+
+        self.current_theme = "normal"
+        self._apply_theme("normal")
+        self.index_color = QColor("#C53030")
+
+        # Центр трансформацій для пружного зростання / пульсації прямокутника
+        self.setTransformOriginPoint(self.w / 2.0, self.h / 2.0)
+
+    def _apply_theme(self, theme_key: str):
+        theme = self.THEMES.get(theme_key, self.THEMES["normal"])
+        self.current_theme = theme_key
+        self.bg_color = QColor(theme["bg"])
+        self.border_color = QColor(theme["border"])
+        self.text_color = QColor(theme["text"])
+        self.border_width = theme["width"]
+
+    def boundingRect(self) -> QRectF:
+        # Прямокутник і простір під індекс
+        return QRectF(-4, -4, self.w + 8, self.h + 28)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Чіткий прямокутний блок (прямокутник масиву як у ТЗ)
+        rect = QRectF(0, 0, self.w, self.h)
+        painter.setPen(QPen(self.border_color, self.border_width))
+        painter.setBrush(QBrush(self.bg_color))
+        painter.drawRect(rect)
+
+        # Текст значення по центру прямокутника
+        painter.setPen(self.text_color)
+        painter.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(self.value))
+
+        # Окремий підпис індексу під прямокутником [idx]
+        painter.setPen(self.index_color)
+        painter.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+        idx_rect = QRectF(0, self.h + 2, self.w, 18)
+        painter.drawText(idx_rect, Qt.AlignmentFlag.AlignCenter, f"[{self.index}]")
+
+    def set_value(self, val):
+        if self.value != val:
+            self.value = val
+            self.update()
+
+    def set_index(self, idx):
+        if self.index != idx:
+            self.index = idx
+            self.update()
+
+    def set_theme(self, theme_key: str):
+        if self.current_theme != theme_key:
+            self._apply_theme(theme_key)
+            self.update()
+
+    def set_colors(self, bg_hex, border_hex, border_w=2.4):
+        self.bg_color = QColor(bg_hex)
+        self.border_color = QColor(border_hex)
+        self.border_width = border_w
+        self.update()
+
+
 # --- Адаптивний віджет візуалізації ---
 class AdaptiveAnimationWidget(QWidget):
     VARIABLE_TERMS = {
@@ -618,13 +697,30 @@ class AdaptiveAnimationWidget(QWidget):
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.view.setStyleSheet("background-color: #ffffff; border: 1px solid #cbd5e0; border-radius: 6px;")
 
+        # Крок 2 ТЗ: Механізм відстеження стану графічних прямокутників масиву
+        self.current_array_blocks = []
+        self.array_title_item = None
+        self.active_animations = []
+
+        # Статичний шар (блок-схеми, дерево класів, стек змінних)
+        self.static_items = []
+
         layout = QVBoxLayout()
         layout.addWidget(self.view)
         layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
 
+    def _clear_static_items(self):
+        """Очищує статичні шари, не видаляючи анімовані прямокутники масиву."""
+        for item in self.static_items:
+            if item.scene() == self.scene:
+                self.scene.removeItem(item)
+        self.static_items.clear()
+
     def _draw_arrow(self, x1, y1, x2, y2, color="#000000", width=2):
-        self.scene.addLine(x1, y1, x2, y2, QPen(QColor(color), width))
+        l = self.scene.addLine(x1, y1, x2, y2, QPen(QColor(color), width))
+        self.static_items.append(l)
+
         angle = math.atan2(y2 - y1, x2 - x1)
         arrow_size = 8
         p1 = QPointF(x2, y2)
@@ -635,6 +731,7 @@ class AdaptiveAnimationWidget(QWidget):
         arrow_head.setBrush(QBrush(QColor(color)))
         arrow_head.setPen(QPen(QColor(color)))
         self.scene.addItem(arrow_head)
+        self.static_items.append(arrow_head)
 
     def _get_rect_intersection(self, rx, ry, rw, rh, target_x, target_y):
         cx = rx + rw / 2.0
@@ -668,7 +765,8 @@ class AdaptiveAnimationWidget(QWidget):
         x2, y2 = p2.x(), p2.y()
 
         pen = QPen(QColor(color), width, Qt.PenStyle.DashLine)
-        self.scene.addLine(x1, y1, x2, y2, pen)
+        l = self.scene.addLine(x1, y1, x2, y2, pen)
+        self.static_items.append(l)
 
         angle = math.atan2(y2 - y1, x2 - x1)
         diamond_len = 12
@@ -686,6 +784,7 @@ class AdaptiveAnimationWidget(QWidget):
         diamond.setBrush(QBrush(QColor("#FFFFFF")))
         diamond.setPen(QPen(QColor(color), 1.8))
         self.scene.addItem(diamond)
+        self.static_items.append(diamond)
 
     def _draw_diamond(self, cx, cy, w, h, text_str, bg_color="#FEFCBF", border_color="#B7791F"):
         p_top = QPointF(cx, cy - h / 2)
@@ -697,12 +796,14 @@ class AdaptiveAnimationWidget(QWidget):
         diamond.setBrush(QBrush(QColor(bg_color)))
         diamond.setPen(QPen(QColor(border_color), 2))
         self.scene.addItem(diamond)
+        self.static_items.append(diamond)
 
         text = QGraphicsTextItem(text_str)
         text.setDefaultTextColor(QColor("#000000"))
         text.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
         text.setPos(cx - text.boundingRect().width() / 2, cy - text.boundingRect().height() / 2)
         self.scene.addItem(text)
+        self.static_items.append(text)
 
     def _draw_parallelogram(self, x, y, w, h, text_str, bg_color="#EDF2F7", border_color="#718096"):
         skew = 16
@@ -715,12 +816,14 @@ class AdaptiveAnimationWidget(QWidget):
         poly.setBrush(QBrush(QColor(bg_color)))
         poly.setPen(QPen(QColor(border_color), 1.8))
         self.scene.addItem(poly)
+        self.static_items.append(poly)
 
         text = QGraphicsTextItem(text_str)
         text.setDefaultTextColor(QColor("#000000"))
         text.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         text.setPos(x + w / 2 - text.boundingRect().width() / 2, y + h / 2 - text.boundingRect().height() / 2)
         self.scene.addItem(text)
+        self.static_items.append(text)
 
     def _draw_class_tree(self, classes_dict: dict, relations: list, start_y: int, cx: int):
         tree = {}
@@ -742,6 +845,7 @@ class AdaptiveAnimationWidget(QWidget):
         obj_rect.setBrush(QBrush(QColor("#FFFFFF")))
         obj_rect.setPen(QPen(QColor("#000000"), 1.8))
         self.scene.addItem(obj_rect)
+        self.static_items.append(obj_rect)
         rect_map["object"] = (obj_x, start_y, box_w, box_h)
         rect_map["Object"] = (obj_x, start_y, box_w, box_h)
 
@@ -750,14 +854,16 @@ class AdaptiveAnimationWidget(QWidget):
         t_obj.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         t_obj.setPos(obj_x + (box_w - t_obj.boundingRect().width()) / 2, start_y + 8)
         self.scene.addItem(t_obj)
+        self.static_items.append(t_obj)
 
-        # Рівень 1: Базовий клас (Animal)
+        # Рівень 1: Базовий клас
         user_bases = [cls for cls in classes_dict.keys() if classes_dict[cls].lower() == "object" or cls in roots]
         if not user_bases:
             user_bases = list(classes_dict.keys())[:1]
 
         y_lvl1 = start_y + box_h + level_gap
-        self.scene.addLine(cx, start_y + box_h, cx, y_lvl1, QPen(QColor("#000000"), 1.8))
+        l1 = self.scene.addLine(cx, start_y + box_h, cx, y_lvl1, QPen(QColor("#000000"), 1.8))
+        self.static_items.append(l1)
 
         base_name = user_bases[0] if user_bases else "Animal"
         base_x = cx - box_w / 2
@@ -765,6 +871,7 @@ class AdaptiveAnimationWidget(QWidget):
         base_rect.setBrush(QBrush(QColor("#FFFFFF")))
         base_rect.setPen(QPen(QColor("#000000"), 1.8))
         self.scene.addItem(base_rect)
+        self.static_items.append(base_rect)
         rect_map[base_name] = (base_x, y_lvl1, box_w, box_h)
 
         t_base = QGraphicsTextItem(base_name)
@@ -772,8 +879,9 @@ class AdaptiveAnimationWidget(QWidget):
         t_base.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         t_base.setPos(base_x + (box_w - t_base.boundingRect().width()) / 2, y_lvl1 + 8)
         self.scene.addItem(t_base)
+        self.static_items.append(t_base)
 
-        # Рівень 2: Нащадки (Cat, Mouse, Duck...)
+        # Рівень 2: Нащадки
         subclasses = [cls for cls, parent in classes_dict.items() if parent == base_name or (cls != base_name and parent.lower() != "object")]
         if not subclasses:
             subclasses = [cls for cls in classes_dict.keys() if cls != base_name]
@@ -786,22 +894,26 @@ class AdaptiveAnimationWidget(QWidget):
             start_sub_x = cx - total_w / 2
 
             branch_y = y_lvl1 + box_h + level_gap / 2
-            self.scene.addLine(cx, y_lvl1 + box_h, cx, branch_y, QPen(QColor("#000000"), 1.8))
+            l2 = self.scene.addLine(cx, y_lvl1 + box_h, cx, branch_y, QPen(QColor("#000000"), 1.8))
+            self.static_items.append(l2)
 
             first_cx = start_sub_x + box_w / 2
             last_cx = start_sub_x + (num_subs - 1) * (box_w + gap) + box_w / 2
-            self.scene.addLine(first_cx, branch_y, last_cx, branch_y, QPen(QColor("#000000"), 1.8))
+            l3 = self.scene.addLine(first_cx, branch_y, last_cx, branch_y, QPen(QColor("#000000"), 1.8))
+            self.static_items.append(l3)
 
             for i, sub_name in enumerate(subclasses):
                 sub_cx = start_sub_x + i * (box_w + gap) + box_w / 2
                 sub_x = sub_cx - box_w / 2
 
-                self.scene.addLine(sub_cx, branch_y, sub_cx, y_lvl2, QPen(QColor("#000000"), 1.8))
+                l_sub = self.scene.addLine(sub_cx, branch_y, sub_cx, y_lvl2, QPen(QColor("#000000"), 1.8))
+                self.static_items.append(l_sub)
 
                 sub_rect = QGraphicsRectItem(sub_x, y_lvl2, box_w, box_h)
                 sub_rect.setBrush(QBrush(QColor("#FFFFFF")))
                 sub_rect.setPen(QPen(QColor("#000000"), 1.8))
                 self.scene.addItem(sub_rect)
+                self.static_items.append(sub_rect)
                 rect_map[sub_name] = (sub_x, y_lvl2, box_w, box_h)
 
                 t_sub = QGraphicsTextItem(sub_name)
@@ -809,27 +921,29 @@ class AdaptiveAnimationWidget(QWidget):
                 t_sub.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
                 t_sub.setPos(sub_x + (box_w - t_sub.boundingRect().width()) / 2, y_lvl2 + 8)
                 self.scene.addItem(t_sub)
+                self.static_items.append(t_sub)
 
-        # Відображення зв'язків агрегації/композиції між контурами прямокутників
         for rel in relations:
             src = rel.get("from")
             dst = rel.get("to")
             if src in rect_map and dst in rect_map:
                 self._draw_aggregation_between_rects(rect_map[src], rect_map[dst], color="#DD6B20", width=2)
 
-        # Легенда ООП (Успадкування та Агрегація)
         leg_y = (y_lvl2 if subclasses else y_lvl1) + box_h + 30
         leg_rect = QGraphicsRectItem(cx - 180, leg_y, 360, 40)
         leg_rect.setBrush(QBrush(QColor("#F7FAFC")))
         leg_rect.setPen(QPen(QColor("#CBD5E0"), 1))
         self.scene.addItem(leg_rect)
+        self.static_items.append(leg_rect)
 
-        self.scene.addLine(cx - 165, leg_y + 20, cx - 130, leg_y + 20, QPen(QColor("#000000"), 1.8))
+        l_leg = self.scene.addLine(cx - 165, leg_y + 20, cx - 130, leg_y + 20, QPen(QColor("#000000"), 1.8))
+        self.static_items.append(l_leg)
         t_leg1 = QGraphicsTextItem("Успадкування (is-a)")
         t_leg1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         t_leg1.setDefaultTextColor(QColor("#000000"))
         t_leg1.setPos(cx - 125, leg_y + 11)
         self.scene.addItem(t_leg1)
+        self.static_items.append(t_leg1)
 
         sample_r1 = (cx + 10, leg_y + 12, 16, 16)
         sample_r2 = (cx + 45, leg_y + 12, 16, 16)
@@ -840,84 +954,181 @@ class AdaptiveAnimationWidget(QWidget):
         t_leg2.setDefaultTextColor(QColor("#DD6B20"))
         t_leg2.setPos(cx + 65, leg_y + 11)
         self.scene.addItem(t_leg2)
+        self.static_items.append(t_leg2)
+
+    def _sync_array_blocks(self, array_name: str, new_values: list, cx: int, y: int, highlighted_indices: dict):
+        """Впровадження ТЗ: плавна динаміка прямокутників без повного перемальовування."""
+        arr_len = len(new_values)
+        elem_w = 68
+        elem_h = 42
+        total_w = max(arr_len * elem_w, 100)
+        start_x = cx - total_w / 2
+
+        # Заголовок масиву
+        title_text = f"Масив / Список: {array_name} (довжина {arr_len})"
+        if not self.array_title_item:
+            self.array_title_item = QGraphicsTextItem(title_text)
+            self.array_title_item.setDefaultTextColor(QColor("#000000"))
+            self.array_title_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            self.scene.addItem(self.array_title_item)
+        else:
+            self.array_title_item.setPlainText(title_text)
+        self.array_title_item.setPos(start_x, y - 26)
+
+        old_len = len(self.current_array_blocks)
+
+        # Сценарій Б: Видалення (pop)
+        if old_len > arr_len:
+            removed_blocks = self.current_array_blocks[arr_len:]
+            self.current_array_blocks = self.current_array_blocks[:arr_len]
+
+            for block in removed_blocks:
+                anim_group = QParallelAnimationGroup(self)
+
+                anim_scale = QPropertyAnimation(block, b"scale", self)
+                anim_scale.setDuration(320)
+                anim_scale.setStartValue(block.scale())
+                anim_scale.setEndValue(0.0)
+                anim_scale.setEasingCurve(QEasingCurve.Type.InBack)
+
+                anim_opacity = QPropertyAnimation(block, b"opacity", self)
+                anim_opacity.setDuration(320)
+                anim_opacity.setStartValue(block.opacity())
+                anim_opacity.setEndValue(0.0)
+
+                anim_group.addAnimation(anim_scale)
+                anim_group.addAnimation(anim_opacity)
+
+                def make_cleanup(item=block, grp=anim_group):
+                    def cleanup():
+                        if item.scene() == self.scene:
+                            self.scene.removeItem(item)
+                        if grp in self.active_animations:
+                            self.active_animations.remove(grp)
+                    return cleanup
+
+                anim_group.finished.connect(make_cleanup())
+                self.active_animations.append(anim_group)
+                anim_group.start()
+
+        # Оновлення існуючих прямокутників та Сценарій В: Зміна / Індексація (Пульсація)
+        for idx in range(min(old_len, arr_len)):
+            block = self.current_array_blocks[idx]
+            block.set_index(idx)
+            target_pos = QPointF(start_x + idx * elem_w, y)
+
+            if block.pos() != target_pos:
+                anim_pos = QPropertyAnimation(block, b"pos", self)
+                anim_pos.setDuration(280)
+                anim_pos.setStartValue(block.pos())
+                anim_pos.setEndValue(target_pos)
+                anim_pos.setEasingCurve(QEasingCurve.Type.OutQuad)
+                self.active_animations.append(anim_pos)
+                anim_pos.finished.connect(lambda a=anim_pos: self.active_animations.remove(a) if a in self.active_animations else None)
+                anim_pos.start()
+
+            val_changed = (block.value != new_values[idx])
+            highlight_theme = highlighted_indices.get(idx, "normal")
+            block.set_theme(highlight_theme)
+
+            # Пульсація при зміні значення або активному стані
+            if val_changed or highlight_theme != "normal":
+                block.set_value(new_values[idx])
+                
+                seq_anim = QSequentialAnimationGroup(self)
+                pulse_up = QPropertyAnimation(block, b"scale", self)
+                pulse_up.setDuration(160)
+                pulse_up.setStartValue(1.0)
+                pulse_up.setEndValue(1.22)
+                pulse_up.setEasingCurve(QEasingCurve.Type.OutQuad)
+
+                pulse_down = QPropertyAnimation(block, b"scale", self)
+                pulse_down.setDuration(160)
+                pulse_down.setStartValue(1.22)
+                pulse_down.setEndValue(1.0)
+                pulse_down.setEasingCurve(QEasingCurve.Type.OutBounce)
+
+                seq_anim.addAnimation(pulse_up)
+                seq_anim.addAnimation(pulse_down)
+                self.active_animations.append(seq_anim)
+                seq_anim.finished.connect(lambda a=seq_anim: self.active_animations.remove(a) if a in self.active_animations else None)
+                seq_anim.start()
+
+        # Сценарій А: Додавання (push_back) прямокутника
+        if arr_len > old_len:
+            for idx in range(old_len, arr_len):
+                val = new_values[idx]
+                block = AnimatedArrayBlock(value=val, index=idx, width=elem_w, height=elem_h)
+                target_pos = QPointF(start_x + idx * elem_w, y)
+                block.setPos(target_pos)
+
+                highlight_theme = highlighted_indices.get(idx, "normal")
+                block.set_theme(highlight_theme)
+
+                block.setScale(0.0)
+                self.scene.addItem(block)
+                self.current_array_blocks.append(block)
+
+                anim_add = QPropertyAnimation(block, b"scale", self)
+                anim_add.setDuration(330)
+                anim_add.setStartValue(0.0)
+                anim_add.setEndValue(1.0)
+                anim_add.setEasingCurve(QEasingCurve.Type.OutBounce)
+                self.active_animations.append(anim_add)
+                anim_add.finished.connect(lambda a=anim_add: self.active_animations.remove(a) if a in self.active_animations else None)
+                anim_add.start()
 
     def update_variables(self, variables: dict, meta_info: dict):
-        self.scene.clear()
+        self._clear_static_items()
 
         has_classes = bool(meta_info.get("classes"))
         has_loops = meta_info.get("has_loops", False)
 
         cx = max(380, self.view.width() // 2)
-        y = 25
+        y = 30
 
-        # 1. ВЕРХНЯ ЧАСТИНА: Масиви / Списки
-        highlighted_indices = {}
-        if "j" in variables and isinstance(variables["j"], int):
-            highlighted_indices[variables["j"]] = ("#ECC94B", "#B7791F")
-        if "i" in variables and isinstance(variables["i"], int):
-            if variables["i"] not in highlighted_indices:
-                highlighted_indices[variables["i"]] = ("#ECC94B", "#B7791F")
-        if "min_index" in variables and isinstance(variables["min_index"], int):
-            highlighted_indices[variables["min_index"]] = ("#ED8936", "#C05621")
+        # Виявлення індексів виділення та їх кольорових статусів
+        highlight_map = {}
+        for var_name in ("i", "j", "k", "current_idx"):
+            if var_name in variables and isinstance(variables[var_name], int):
+                highlight_map[variables[var_name]] = "active"
 
-        for name, value in variables.items():
-            if isinstance(value, list):
-                arr_len = len(value)
-                elem_w = 68
-                elem_h = 42
-                total_w = arr_len * elem_w
-                start_x = cx - total_w / 2
+        for var_name in ("min_index", "max_index", "key_index"):
+            if var_name in variables and isinstance(variables[var_name], int):
+                highlight_map[variables[var_name]] = "selected"
 
-                lbl = QGraphicsTextItem(f"Масив / Список: {name} (довжина {arr_len})")
-                lbl.setDefaultTextColor(QColor("#000000"))
-                lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-                lbl.setPos(start_x, y - 24)
-                self.scene.addItem(lbl)
+        for var_name in ("found_idx", "target"):
+            if var_name in variables and isinstance(variables[var_name], int):
+                highlight_map[variables[var_name]] = "match"
 
-                for idx, elem in enumerate(value):
-                    rx = start_x + idx * elem_w
-                    if idx in highlighted_indices:
-                        bg_hex, border_hex = highlighted_indices[idx]
-                        bg_col = QColor(bg_hex)
-                        border_col = QColor(border_hex)
-                        p_width = 2.5
-                    else:
-                        bg_col = QColor("#68D391")
-                        border_col = QColor("#22543D")
-                        p_width = 1.5
-
-                    rect = QGraphicsRectItem(rx, y, elem_w, elem_h)
-                    rect.setBrush(QBrush(bg_col))
-                    rect.setPen(QPen(border_col, p_width))
-                    self.scene.addItem(rect)
-
-                    t = QGraphicsTextItem(str(elem))
-                    t.setDefaultTextColor(QColor("#000000"))
-                    t.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-                    t.setPos(rx + 10, y + 8)
-                    self.scene.addItem(t)
-
-                    idx_lbl = QGraphicsTextItem(f"[{idx}]")
-                    idx_lbl.setDefaultTextColor(QColor("#C53030"))
-                    idx_lbl.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-                    idx_lbl.setPos(rx + elem_w / 2 - 12, y + elem_h + 2)
-                    self.scene.addItem(idx_lbl)
-
-                y += elem_h + 40
+        # 1. ВЕРХНЯ ЧАСТИНА: Прямокутний анімований масив
+        list_entry = next(((k, v) for k, v in variables.items() if isinstance(v, list)), None)
+        if list_entry:
+            arr_name, arr_val = list_entry
+            self._sync_array_blocks(arr_name, arr_val, cx, y, highlight_map)
+            y += 42 + 45
+        else:
+            if self.current_array_blocks:
+                for b in self.current_array_blocks:
+                    if b.scene() == self.scene:
+                        self.scene.removeItem(b)
+                self.current_array_blocks.clear()
+            if self.array_title_item and self.array_title_item.scene() == self.scene:
+                self.scene.removeItem(self.array_title_item)
+                self.array_title_item = None
 
         # 2. НИЖНЯ ЧАСТИНА: АДАПТИВНИЙ РЕЖИМ
         if has_classes:
-            # --- РЕЖИМ 1: ДЕРЕВО КЛАСІВ (ООП) ---
             title = QGraphicsTextItem("Ієрархія класів (ООП)")
             title.setDefaultTextColor(QColor("#004085"))
             title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
             title.setPos(cx - title.boundingRect().width() / 2, y - 10)
             self.scene.addItem(title)
+            self.static_items.append(title)
 
             self._draw_class_tree(meta_info["classes"], meta_info.get("relations", []), y + 20, cx)
 
         elif has_loops:
-            # --- РЕЖИМ 2: БЛОК-СХЕМА ЦИКЛУ З ОПИСАМИ ЧАСТИН ---
             loop_var = "i"
             if "j" in variables:
                 loop_var = "j"
@@ -930,29 +1141,30 @@ class AdaptiveAnimationWidget(QWidget):
             list_obj = next((v for v in variables.values() if isinstance(v, list)), None)
             limit_val = len(list_obj) if list_obj is not None else 5
 
-            # 1. Початок циклу (Ініціалізація)
             b1_w, b1_h = 180, 40
             b1_x = cx - b1_w / 2
             rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
             rect1.setBrush(QBrush(QColor("#BEE3F8")))
             rect1.setPen(QPen(QColor("#2B6CB0"), 1.8))
             self.scene.addItem(rect1)
+            self.static_items.append(rect1)
 
             t1 = QGraphicsTextItem(f"Початок: {loop_var} = {loop_val}")
             t1.setDefaultTextColor(QColor("#000000"))
             t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
             t1.setPos(b1_x + 15, y + 8)
             self.scene.addItem(t1)
+            self.static_items.append(t1)
 
             desc1 = QGraphicsTextItem("◀ Вхід / Ініціалізація лічильника")
             desc1.setDefaultTextColor(QColor("#4A5568"))
             desc1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc1.setPos(b1_x + b1_w + 10, y + 10)
             self.scene.addItem(desc1)
+            self.static_items.append(desc1)
 
             self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
 
-            # 2. Ромб умови циклу
             d_cy = y + b1_h + 30 + 35
             d_w, d_h = 150, 70
             self._draw_diamond(cx, d_cy, d_w, d_h, f"{loop_var} < {limit_val} ?")
@@ -962,23 +1174,25 @@ class AdaptiveAnimationWidget(QWidget):
             desc_diamond.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc_diamond.setPos(cx + d_w / 2 + 10, d_cy - 35)
             self.scene.addItem(desc_diamond)
+            self.static_items.append(desc_diamond)
 
-            # ГІЛКА «ТАК (True)» ВНИЗ
             lbl_yes = QGraphicsTextItem("Так (True)")
             lbl_yes.setDefaultTextColor(QColor("#000000"))
             lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             lbl_yes.setPos(cx + 6, d_cy + d_h / 2 + 4)
             self.scene.addItem(lbl_yes)
+            self.static_items.append(lbl_yes)
 
-            # ГІЛКА «НІ (False)» ПРАВОРУЧ
             lbl_no = QGraphicsTextItem("Ні (False)")
             lbl_no.setDefaultTextColor(QColor("#000000"))
             lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             lbl_no.setPos(cx + d_w / 2 + 8, d_cy - 24)
             self.scene.addItem(lbl_no)
+            self.static_items.append(lbl_no)
 
             exit_x = cx + d_w / 2 + 110
-            self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#000000"), 2))
+            l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#000000"), 2))
+            self.static_items.append(l_exit)
             self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25)
             self._draw_parallelogram(exit_x - 65, d_cy + 25, 140, 40, "Вихід з циклу")
 
@@ -987,34 +1201,35 @@ class AdaptiveAnimationWidget(QWidget):
             desc_exit.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc_exit.setPos(exit_x + 80, d_cy + 35)
             self.scene.addItem(desc_exit)
+            self.static_items.append(desc_exit)
 
-            # Стрілка вниз від ромба -> Тіло циклу
             body_y = d_cy + d_h / 2 + 35
             self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y)
 
-            # Блок 3: Тіло циклу
             b3_w, b3_h = 180, 40
             b3_x = cx - b3_w / 2
             rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
             rect3.setBrush(QBrush(QColor("#EBF8FF")))
             rect3.setPen(QPen(QColor("#3182CE"), 1.8))
             self.scene.addItem(rect3)
+            self.static_items.append(rect3)
 
             t3 = QGraphicsTextItem(f"Крок: {loop_var} = {loop_val}")
             t3.setDefaultTextColor(QColor("#000000"))
             t3.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
             t3.setPos(b3_x + 18, body_y + 8)
             self.scene.addItem(t3)
+            self.static_items.append(t3)
 
             desc3 = QGraphicsTextItem("◀ Тіло циклу (дія на поточному кроці)")
             desc3.setDefaultTextColor(QColor("#4A5568"))
             desc3.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc3.setPos(b3_x + b3_w + 10, body_y + 10)
             self.scene.addItem(desc3)
+            self.static_items.append(desc3)
 
             self._draw_arrow(cx, body_y + b3_h, cx, body_y + b3_h + 25)
 
-            # Блок 4: Стан та значення
             b4_y = body_y + b3_h + 25
             b4_w, b4_h = 240, 42
             b4_x = cx - b4_w / 2
@@ -1022,6 +1237,7 @@ class AdaptiveAnimationWidget(QWidget):
             rect4.setBrush(QBrush(QColor("#E2E8F0")))
             rect4.setPen(QPen(QColor("#4A5568"), 1.8))
             self.scene.addItem(rect4)
+            self.static_items.append(rect4)
 
             other_vars = [f"{k}={v}" for k, v in variables.items() if k != loop_var and not isinstance(v, list)]
             sub_text = ", ".join(other_vars) if other_vars else f"Ітерація {loop_val + 1} триває"
@@ -1030,19 +1246,21 @@ class AdaptiveAnimationWidget(QWidget):
             t4.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
             t4.setPos(b4_x + 10, b4_y + 9)
             self.scene.addItem(t4)
+            self.static_items.append(t4)
 
             desc4 = QGraphicsTextItem("◀ Поточні значення змінних")
             desc4.setDefaultTextColor(QColor("#4A5568"))
             desc4.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc4.setPos(b4_x + b4_w + 10, b4_y + 11)
             self.scene.addItem(desc4)
+            self.static_items.append(desc4)
 
-            # Зворотна петля циклу
             loop_left_x = cx - 150
             pen_loop = QPen(QColor("#000000"), 2)
-            self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
-            self.scene.addLine(cx, b4_y + b4_h + 18, loop_left_x, b4_y + b4_h + 18, pen_loop)
-            self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
+            l_lp1 = self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
+            l_lp2 = self.scene.addLine(cx, b4_y + b4_h + 18, loop_left_x, b4_y + b4_h + 18, pen_loop)
+            l_lp3 = self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
+            self.static_items.extend([l_lp1, l_lp2, l_lp3])
             self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
 
             desc_loop = QGraphicsTextItem("Наступна ітерація\n(повернення в умову) ▶")
@@ -1050,12 +1268,12 @@ class AdaptiveAnimationWidget(QWidget):
             desc_loop.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             desc_loop.setPos(loop_left_x - 145, d_cy - 12)
             self.scene.addItem(desc_loop)
+            self.static_items.append(desc_loop)
 
         else:
-            # --- РЕЖИМ 3: ЗВИЧАЙНИЙ СТЕК ЗМІННИХ ---
-            prev_center = None
             var_w, var_h = 140, 42
             spacing = 35
+            prev_center = None
 
             non_list_vars = {k: v for k, v in variables.items() if not isinstance(v, list)}
 
@@ -1065,6 +1283,7 @@ class AdaptiveAnimationWidget(QWidget):
                 empty_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 empty_lbl.setPos(cx - empty_lbl.boundingRect().width() / 2, y + 10)
                 self.scene.addItem(empty_lbl)
+                self.static_items.append(empty_lbl)
                 return
 
             for name, val in non_list_vars.items():
@@ -1073,6 +1292,7 @@ class AdaptiveAnimationWidget(QWidget):
                 rect.setBrush(QBrush(QColor("#BEE3F8")))
                 rect.setPen(QPen(QColor("#2B6CB0"), 1.8))
                 self.scene.addItem(rect)
+                self.static_items.append(rect)
 
                 val_str = str(val)
                 if hasattr(val, '__class__') and val.__class__.__name__ not in ('int', 'float', 'str', 'bool'):
@@ -1083,6 +1303,7 @@ class AdaptiveAnimationWidget(QWidget):
                 vt.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
                 vt.setPos(vx + 10, y + 10)
                 self.scene.addItem(vt)
+                self.static_items.append(vt)
 
                 desc = self.VARIABLE_TERMS.get(name, "Локальна змінна")
                 side_lbl = QGraphicsTextItem(f"◀ {desc}")
@@ -1090,6 +1311,7 @@ class AdaptiveAnimationWidget(QWidget):
                 side_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
                 side_lbl.setPos(vx + var_w + 10, y + 10)
                 self.scene.addItem(side_lbl)
+                self.static_items.append(side_lbl)
 
                 if prev_center:
                     self._draw_arrow(prev_center[0], prev_center[1], vx + var_w / 2, y)
