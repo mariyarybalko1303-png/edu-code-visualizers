@@ -548,7 +548,6 @@ class CodeRunner(QThread):
         sys.stdout = io.StringIO()
         sys.stderr = sys.stdout
 
-        # Додавання шляхів проєкту та його venv до sys.path
         if self.project_dir:
             if self.project_dir not in sys.path:
                 sys.path.insert(0, self.project_dir)
@@ -1352,7 +1351,7 @@ class AdaptiveAnimationWidget(QWidget):
                 y += var_h + spacing
 
 
-# --- Інтерактивне вікно результату консолі (термінал з можливістю друку прямо в результат) ---
+# --- Інтерактивне вікно результату консолі (термінал) ---
 class OutputTextEdit(QPlainTextEdit):
     input_submitted = pyqtSignal(str)
 
@@ -1723,12 +1722,12 @@ class PyCharmWelcomeWindow(QWidget):
         page.setLayout(layout)
         return page
 
-    # 3. Сторінка Plugins (плагіни)
+    # 3. Сторінка Plugins (з чітким білим текстом і фіксованими розмірами карток)
     def create_plugins_page(self):
         page = QWidget()
         layout = QVBoxLayout()
-        layout.setContentsMargins(40, 40, 40, 30)
-        layout.setSpacing(15)
+        layout.setContentsMargins(40, 30, 40, 20)
+        layout.setSpacing(12)
 
         header = QLabel("<h2>Plugins</h2>")
         header.setStyleSheet("color: #ffffff;")
@@ -1741,7 +1740,7 @@ class PyCharmWelcomeWindow(QWidget):
 
         plugin_list = QWidget()
         plist_layout = QVBoxLayout()
-        plist_layout.setSpacing(10)
+        plist_layout.setSpacing(8)
 
         plugins_data = [
             ("🐍 Python Community Edition", "Core Python language support, debugging and virtualenv manager.", "Installed"),
@@ -1753,14 +1752,28 @@ class PyCharmWelcomeWindow(QWidget):
 
         for p_name, p_desc, p_status in plugins_data:
             item_frame = QFrame()
-            item_frame.setStyleSheet("background-color: #1e1f22; border-radius: 6px; border: 1px solid #393b40; padding: 10px;")
+            item_frame.setObjectName("pluginCard")
+            item_frame.setMinimumHeight(65)
+            item_frame.setStyleSheet("""
+                QFrame#pluginCard {
+                    background-color: #1e1f22;
+                    border-radius: 6px;
+                    border: 1px solid #393b40;
+                }
+                QFrame#pluginCard QLabel {
+                    background: transparent;
+                }
+            """)
             item_layout = QHBoxLayout()
+            item_layout.setContentsMargins(15, 8, 15, 8)
 
             info_layout = QVBoxLayout()
+            info_layout.setSpacing(2)
             lbl_title = QLabel(f"<b>{p_name}</b>")
-            lbl_title.setStyleSheet("color: #ffffff; font-size: 10pt; border: none;")
+            lbl_title.setStyleSheet("color: #ffffff; font-size: 10.5pt;")
             lbl_desc = QLabel(p_desc)
-            lbl_desc.setStyleSheet("color: #8c9099; font-size: 9pt; border: none;")
+            lbl_desc.setStyleSheet("color: #a0a6b2; font-size: 9pt;")
+            lbl_desc.setWordWrap(True)
             info_layout.addWidget(lbl_title)
             info_layout.addWidget(lbl_desc)
 
@@ -1768,11 +1781,12 @@ class PyCharmWelcomeWindow(QWidget):
             item_layout.addStretch()
 
             btn_status = QPushButton(p_status)
+            btn_status.setFixedWidth(95)
             if p_status == "Installed":
                 btn_status.setEnabled(False)
-                btn_status.setStyleSheet("background-color: #2e3035; color: #6e7279; border: 1px solid #393b40; border-radius: 4px; padding: 6px 14px; font-weight: bold;")
+                btn_status.setStyleSheet("background-color: #2e3035; color: #6e7279; border: 1px solid #393b40; border-radius: 4px; padding: 6px 10px; font-weight: bold;")
             else:
-                btn_status.setStyleSheet("background-color: #3574f0; color: #ffffff; border-radius: 4px; padding: 6px 14px; font-weight: bold; border: none;")
+                btn_status.setStyleSheet("background-color: #3574f0; color: #ffffff; border-radius: 4px; padding: 6px 10px; font-weight: bold; border: none;")
                 btn_status.clicked.connect(lambda checked, b=btn_status, n=p_name: self.install_plugin(b, n))
 
             item_layout.addWidget(btn_status)
@@ -1789,22 +1803,22 @@ class PyCharmWelcomeWindow(QWidget):
     def install_plugin(self, button, plugin_name):
         button.setText("Installed")
         button.setEnabled(False)
-        button.setStyleSheet("background-color: #2e3035; color: #6e7279; border: 1px solid #393b40; border-radius: 4px; padding: 6px 14px; font-weight: bold;")
+        button.setStyleSheet("background-color: #2e3035; color: #6e7279; border: 1px solid #393b40; border-radius: 4px; padding: 6px 10px; font-weight: bold;")
         QMessageBox.information(self, "Plugins", f"Плагін '{plugin_name}' успішно активовано!")
 
-    # 4. Сторінка Learn Python
+    # 4. Сторінка Learn Python (з чітким білим текстом і кнопками Open)
     def create_learn_page(self):
         page = QWidget()
         layout = QVBoxLayout()
-        layout.setContentsMargins(40, 40, 40, 30)
-        layout.setSpacing(18)
+        layout.setContentsMargins(40, 30, 40, 20)
+        layout.setSpacing(12)
 
         header = QLabel("<h2>Learn Python</h2>")
         header.setStyleSheet("color: #ffffff;")
         layout.addWidget(header)
 
         sub = QLabel("Explore interactive tutorials, shortcuts, and documentation:")
-        sub.setStyleSheet("color: #8c9099;")
+        sub.setStyleSheet("color: #a0a6b2; font-size: 9.5pt;")
         layout.addWidget(sub)
 
         cards = [
@@ -1816,14 +1830,28 @@ class PyCharmWelcomeWindow(QWidget):
 
         for c_title, c_desc, c_callback in cards:
             c_frame = QFrame()
-            c_frame.setStyleSheet("background-color: #1e1f22; border-radius: 6px; border: 1px solid #393b40; padding: 10px;")
+            c_frame.setObjectName("learnCard")
+            c_frame.setMinimumHeight(65)
+            c_frame.setStyleSheet("""
+                QFrame#learnCard {
+                    background-color: #1e1f22;
+                    border-radius: 6px;
+                    border: 1px solid #393b40;
+                }
+                QFrame#learnCard QLabel {
+                    background: transparent;
+                }
+            """)
             c_layout = QHBoxLayout()
+            c_layout.setContentsMargins(15, 8, 15, 8)
 
             c_info = QVBoxLayout()
+            c_info.setSpacing(2)
             lbl_t = QLabel(f"<b>{c_title}</b>")
-            lbl_t.setStyleSheet("color: #ffffff; font-size: 10pt; border: none;")
+            lbl_t.setStyleSheet("color: #ffffff; font-size: 10.5pt;")
             lbl_d = QLabel(c_desc)
-            lbl_d.setStyleSheet("color: #8c9099; font-size: 9pt; border: none;")
+            lbl_d.setStyleSheet("color: #a0a6b2; font-size: 9pt;")
+            lbl_d.setWordWrap(True)
             c_info.addWidget(lbl_t)
             c_info.addWidget(lbl_d)
 
@@ -1831,6 +1859,7 @@ class PyCharmWelcomeWindow(QWidget):
             c_layout.addStretch()
 
             btn_open = QPushButton("Open")
+            btn_open.setFixedWidth(85)
             btn_open.setStyleSheet("background-color: #3574f0; color: #ffffff; border-radius: 4px; padding: 6px 14px; font-weight: bold; border: none;")
             btn_open.clicked.connect(c_callback)
             c_layout.addWidget(btn_open)
@@ -1898,6 +1927,18 @@ class MainWindow(QMainWindow):
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.update_title_bar)
+
+        # Налаштування вкладок: щоб усі назви файлів завжди були видимі і не обрізалися
+        self.tab_widget.setUsesScrollButtons(True)
+        self.tab_widget.setElideMode(Qt.TextElideMode.ElideNone)
+        self.tab_widget.setStyleSheet("""
+            QTabBar::tab {
+                min-width: 110px;
+                padding: 6px 14px;
+                font-family: 'Consolas', 'Segoe UI';
+                font-size: 10pt;
+            }
+        """)
 
         self.output = OutputTextEdit()
         self.output.input_submitted.connect(self.handle_direct_user_input)
