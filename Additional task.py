@@ -22,16 +22,17 @@ except Exception:
 # --- PyQt6 ---
 from PyQt6.QtWidgets import (
     QApplication, QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsTextItem,
-    QMainWindow, QStatusBar, QWidget, QVBoxLayout, QPushButton, QToolTip,
+    QMainWindow, QStatusBar, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QToolTip,
     QPlainTextEdit, QListView, QGraphicsView, QGraphicsScene,
-    QSplitter, QTabWidget, QToolBar, QLabel, QTextEdit,
+    QSplitter, QTabWidget, QToolBar, QLabel, QTextEdit, QLineEdit,
     QInputDialog, QFileDialog, QMessageBox, QProgressBar, QDockWidget, QTreeView,
-    QGraphicsObject,
+    QGraphicsObject, QDialog, QDialogButtonBox, QCheckBox, QGroupBox, QFormLayout,
+    QFrame, QRadioButton, QComboBox
 )
 from PyQt6.QtGui import (
     QAction, QFont, QColor, QPainter, QPainterPath, QPolygonF, QTextCursor, QTextCharFormat, QSyntaxHighlighter,
     QPixmap, QPen, QBrush, QPalette,
-    QFileSystemModel, QWheelEvent, QKeyEvent
+    QFileSystemModel, QWheelEvent, QKeyEvent, QIcon
 )
 from PyQt6.QtCore import (
     QTimer, QSize, QRect, QRectF, QPoint, QPointF, QDir, QUrl, pyqtSignal,
@@ -580,7 +581,7 @@ class CodeRunner(QThread):
                         time.sleep(0.05)
                     time.sleep(self.step_delay / sleep_steps)
 
-        # Перевизначення вбудованого input() для прямого введення у вікно результату
+        # Перевизначення вбудованого input() для інтерактивного введення прямо у результат
         def custom_input(prompt=""):
             if not self.running:
                 raise KeyboardInterrupt("Execution stopped")
@@ -1379,7 +1380,6 @@ class OutputTextEdit(QPlainTextEdit):
 
         cursor = self.textCursor()
 
-        # Натискання Enter — відправка введеного значення у виконуваний код
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             doc_text = self.toPlainText()
             user_input = doc_text[self.prompt_pos:]
@@ -1389,7 +1389,6 @@ class OutputTextEdit(QPlainTextEdit):
             event.accept()
             return
 
-        # Захист від видалення тексту промпту за допомогою Backspace
         if event.key() == Qt.Key.Key_Backspace:
             if cursor.position() <= self.prompt_pos:
                 event.accept()
@@ -1406,6 +1405,387 @@ class OutputTextEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+# --- Діалог створення проєкту у стилі PyCharm New Project (Скріншот 2) ---
+class PyCharmNewProjectDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("New Project")
+        self.resize(600, 380)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2b2d30;
+                color: #dfdfdf;
+                font-family: 'Segoe UI';
+                font-size: 10pt;
+            }
+            QLabel {
+                color: #dfdfdf;
+            }
+            QLineEdit {
+                background-color: #1e1f22;
+                color: #ffffff;
+                border: 1px solid #4e5157;
+                border-radius: 4px;
+                padding: 6px 8px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3574f0;
+            }
+            QPushButton {
+                background-color: #3574f0;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3069db;
+            }
+            QGroupBox {
+                border: 1px solid #4e5157;
+                border-radius: 6px;
+                margin-top: 14px;
+                padding-top: 14px;
+                font-weight: bold;
+                color: #dfdfdf;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+            }
+            QCheckBox, QRadioButton {
+                color: #dfdfdf;
+                spacing: 6px;
+            }
+        """)
+
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+
+        # 1. Location (розташування проєкту)
+        form_layout = QFormLayout()
+        self.location_edit = QLineEdit()
+        default_dir = os.path.join(os.path.expanduser("~"), "PyCharmProjects", "pythonProject")
+        self.location_edit.setText(default_dir)
+
+        browse_btn = QPushButton("📁")
+        browse_btn.setFixedWidth(40)
+        browse_btn.setStyleSheet("background-color: #393b40; border: 1px solid #4e5157;")
+        browse_btn.clicked.connect(self.browse_location)
+
+        loc_layout = QHBoxLayout()
+        loc_layout.addWidget(self.location_edit)
+        loc_layout.addWidget(browse_btn)
+        form_layout.addRow("Location:", loc_layout)
+        layout.addLayout(form_layout)
+
+        # 2. Python Interpreter: New Virtualenv environment (як на скріншоті 2)
+        interpreter_group = QGroupBox("▾ Python Interpreter: New Virtualenv environment")
+        group_layout = QVBoxLayout()
+        group_layout.setSpacing(10)
+
+        # Radio option: New environment using Virtualenv
+        self.new_env_radio = QRadioButton("New environment using  Virtualenv")
+        self.new_env_radio.setChecked(True)
+        group_layout.addWidget(self.new_env_radio)
+
+        # Sub-form всередині групи
+        sub_form = QFormLayout()
+        sub_form.setContentsMargins(20, 0, 0, 0)
+
+        self.venv_loc_edit = QLineEdit()
+        self.venv_loc_edit.setText(os.path.join(default_dir, "venv"))
+        sub_form.addRow("Location:", self.venv_loc_edit)
+
+        self.location_edit.textChanged.connect(
+            lambda text: self.venv_loc_edit.setText(os.path.join(text, "venv"))
+        )
+
+        self.base_interp_edit = QLineEdit(sys.executable)
+        self.base_interp_edit.setReadOnly(True)
+        sub_form.addRow("Base interpreter:", self.base_interp_edit)
+        group_layout.addLayout(sub_form)
+
+        # Checkboxes
+        self.inherit_cb = QCheckBox("Inherit global site-packages")
+        self.make_avail_cb = QCheckBox("Make available to all projects")
+        group_layout.addWidget(self.inherit_cb)
+        group_layout.addWidget(self.make_avail_cb)
+
+        interpreter_group.setLayout(group_layout)
+        layout.addWidget(interpreter_group)
+
+        # 3. Create a main.py welcome script
+        self.main_file_checkbox = QCheckBox("Create a main.py welcome script")
+        self.main_file_checkbox.setChecked(True)
+        layout.addWidget(self.main_file_checkbox)
+
+        # 4. Buttons: Create / Cancel
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        create_btn = QPushButton("Create")
+        create_btn.setDefault(True)
+        create_btn.clicked.connect(self.accept)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("background-color: #393b40; border: 1px solid #4e5157;")
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addWidget(create_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+
+    def browse_location(self):
+        chosen_dir = QFileDialog.getExistingDirectory(self, "Виберіть директорію проєкту")
+        if chosen_dir:
+            self.location_edit.setText(os.path.join(chosen_dir, "pythonProject"))
+
+    def get_data(self):
+        return {
+            "path": self.location_edit.text().strip(),
+            "venv_path": self.venv_loc_edit.text().strip(),
+            "create_venv": self.new_env_radio.isChecked(),
+            "create_main": self.main_file_checkbox.isChecked()
+        }
+
+
+# --- Перше вікно додатку: Welcome to PyCharm / Welcome to PY.R.V.I.S (Скріншот 1) ---
+class WelcomeWindow(QWidget):
+    open_project_signal = pyqtSignal(str)
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.setWindowTitle("Welcome to PY.R.V.I.S.")
+        self.resize(860, 560)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2b2d30;
+                color: #dfdfdf;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+        """)
+
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Лівий сайдбар (Projects, Customize, Plugins, Learn)
+        left_sidebar = QWidget()
+        left_sidebar.setFixedWidth(240)
+        left_sidebar.setStyleSheet("background-color: #1e1f22; border-right: 1px solid #393b40;")
+        side_layout = QVBoxLayout()
+        side_layout.setContentsMargins(16, 20, 16, 20)
+        side_layout.setSpacing(6)
+
+        # Логотип/Заголовок
+        logo_label = QLabel("⚡ PY.R.V.I.S.")
+        logo_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #43b581; margin-bottom: 20px;")
+        side_layout.addWidget(logo_label)
+
+        btn_projects = QPushButton("📂 Projects")
+        btn_projects.setStyleSheet("""
+            QPushButton {
+                background-color: #2e436e;
+                color: #ffffff;
+                text-align: left;
+                padding: 10px 14px;
+                border-radius: 6px;
+                font-weight: bold;
+            }
+        """)
+        side_layout.addWidget(btn_projects)
+
+        for tab_name in ("⚙ Customize", "🧩 Plugins", "🎓 Learn PyCharm"):
+            b = QPushButton(tab_name)
+            b.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    color: #9aa0a6;
+                    text-align: left;
+                    padding: 8px 14px;
+                    border: none;
+                    border-radius: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #2b2d30;
+                    color: #ffffff;
+                }
+            """)
+            side_layout.addWidget(b)
+
+        side_layout.addStretch()
+        left_sidebar.setLayout(side_layout)
+        main_layout.addWidget(left_sidebar)
+
+        # Центральна робоча область з трьома кнопками: New Project, Open, Get from VCS
+        center_widget = QWidget()
+        center_widget.setStyleSheet("background-color: #2b2d30;")
+        center_layout = QVBoxLayout()
+        center_layout.setContentsMargins(40, 50, 40, 40)
+        center_layout.setSpacing(14)
+
+        welcome_title = QLabel("Welcome to PY.R.V.I.S.")
+        welcome_title.setStyleSheet("font-size: 22pt; font-weight: bold; color: #ffffff;")
+        welcome_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center_layout.addWidget(welcome_title)
+
+        welcome_sub = QLabel("Create a new project to start from scratch.\nOpen existing project from disk or version control.")
+        welcome_sub.setStyleSheet("font-size: 11pt; color: #9aa0a6; line-height: 1.4;")
+        welcome_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center_layout.addWidget(welcome_sub)
+
+        center_layout.addSpacing(25)
+
+        # Блок з 3 кнопками дій
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(18)
+        action_layout.addStretch()
+
+        # 1. New Project Button
+        self.btn_new = QPushButton("➕\n\nNew Project")
+        self.btn_new.setFixedSize(130, 110)
+        self.btn_new.setStyleSheet("""
+            QPushButton {
+                background-color: #3574f0;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 11pt;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #3069db;
+            }
+        """)
+        self.btn_new.clicked.connect(self.on_new_project)
+        action_layout.addWidget(self.btn_new)
+
+        # 2. Open Project Button
+        self.btn_open = QPushButton("📁\n\nOpen")
+        self.btn_open.setFixedSize(130, 110)
+        self.btn_open.setStyleSheet("""
+            QPushButton {
+                background-color: #393b40;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 11pt;
+                border-radius: 8px;
+                border: 1px solid #4e5157;
+            }
+            QPushButton:hover {
+                background-color: #43454a;
+            }
+        """)
+        self.btn_open.clicked.connect(self.on_open_project)
+        action_layout.addWidget(self.btn_open)
+
+        # 3. Get from VCS
+        self.btn_vcs = QPushButton("⌥\n\nGet from VCS")
+        self.btn_vcs.setFixedSize(130, 110)
+        self.btn_vcs.setStyleSheet("""
+            QPushButton {
+                background-color: #393b40;
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 11pt;
+                border-radius: 8px;
+                border: 1px solid #4e5157;
+            }
+            QPushButton:hover {
+                background-color: #43454a;
+            }
+        """)
+        self.btn_vcs.clicked.connect(lambda: QMessageBox.information(self, "VCS", "Підключення до системи контролю версій Git..."))
+        action_layout.addWidget(self.btn_vcs)
+
+        action_layout.addStretch()
+        center_layout.addLayout(action_layout)
+
+        center_layout.addStretch()
+
+        # Нижня підказка Onboarding Tour
+        tour_box = QFrame()
+        tour_box.setStyleSheet("background-color: #1e1f22; border-radius: 8px; border: 1px solid #393b40;")
+        tour_layout = QHBoxLayout()
+        tour_layout.setContentsMargins(18, 14, 18, 14)
+
+        tour_text_layout = QVBoxLayout()
+        t_label = QLabel("Take a quick onboarding tour")
+        t_label.setStyleSheet("font-weight: bold; font-size: 11pt; color: #ffffff;")
+        t_desc = QLabel("Get familiar with the PyCharm / PY.R.V.I.S. interface and run animated code with live input!")
+        t_desc.setStyleSheet("color: #9aa0a6; font-size: 9pt;")
+        tour_text_layout.addWidget(t_label)
+        tour_text_layout.addWidget(t_desc)
+
+        tour_layout.addLayout(tour_text_layout)
+        tour_layout.addStretch()
+
+        tour_btn = QPushButton("Start Tour")
+        tour_btn.setStyleSheet("background-color: #393b40; color: #ffffff; padding: 6px 14px; border-radius: 4px; border: 1px solid #4e5157;")
+        tour_btn.clicked.connect(self.on_new_project)
+        tour_layout.addWidget(tour_btn)
+
+        tour_box.setLayout(tour_layout)
+        center_layout.addWidget(tour_box)
+
+        center_widget.setLayout(center_layout)
+        main_layout.addWidget(center_widget)
+
+        self.setLayout(main_layout)
+
+    def on_new_project(self):
+        dialog = PyCharmNewProjectDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            project_dir = data["path"]
+            if not project_dir:
+                return
+
+            try:
+                os.makedirs(project_dir, exist_ok=True)
+
+                # Створення віртуального оточення venv з підпапками
+                if data["create_venv"]:
+                    venv_dir = os.path.join(project_dir, "venv")
+                    scripts_dir = os.path.join(venv_dir, "Scripts" if sys.platform == "win32" else "bin")
+                    lib_dir = os.path.join(venv_dir, "Lib", "site-packages") if sys.platform == "win32" else os.path.join(venv_dir, "lib", "python3.10", "site-packages")
+
+                    os.makedirs(scripts_dir, exist_ok=True)
+                    os.makedirs(lib_dir, exist_ok=True)
+
+                    pyvenv_cfg = os.path.join(venv_dir, "pyvenv.cfg")
+                    if not os.path.exists(pyvenv_cfg):
+                        with open(pyvenv_cfg, "w", encoding="utf-8") as f:
+                            f.write(f"home = {os.path.dirname(sys.executable)}\ninclude-system-site-packages = false\nversion = 3.10\n")
+
+                # Створення стартового файлу main.py
+                main_file_path = None
+                if data["create_main"]:
+                    main_file_path = os.path.join(project_dir, "main.py")
+                    if not os.path.exists(main_file_path):
+                        with open(main_file_path, "w", encoding="utf-8") as f:
+                            f.write("# Welcome to your project!\n\narr = [10, 20, 30]\nfor i in range(len(arr)):\n    print(f'Element {i}: {arr[i]}')\n")
+
+                # Закриваємо перше вікно вітання і відкриваємо головне робоче вікно
+                self.hide()
+                self.main_window.open_project_directory(project_dir, main_file_path)
+                self.main_window.show()
+
+            except Exception as e:
+                QMessageBox.critical(self, "Помилка", f"Не вдалося створити проєкт:\n{str(e)}")
+
+    def on_open_project(self):
+        chosen_dir = QFileDialog.getExistingDirectory(self, "Відкрити проєкт")
+        if chosen_dir:
+            self.hide()
+            self.main_window.open_project_directory(chosen_dir)
+            self.main_window.show()
+
+
 # --- Головне вікно додатку ---
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1413,6 +1793,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PY.R.V.I.S.")
         self.resize(1600, 1000)
 
+        self.project_path = None
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
@@ -1430,15 +1811,17 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.progress_bar)
         self.setStatusBar(self.status_bar)
 
+        # Модель файлової системи для дерева проєкту
         self.fs_model = QFileSystemModel()
         self.fs_model.setRootPath(QDir.rootPath())
-        self.fs_model.setNameFilters(["*.py"])
-        self.fs_model.setNameFilterDisables(False)
+        self.fs_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.Files | QDir.Filter.NoDotAndDotDot)
 
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.fs_model)
         self.tree_view.doubleClicked.connect(self.open_file_from_tree)
         self.tree_view.setHeaderHidden(True)
+        for col in range(1, 4):
+            self.tree_view.hideColumn(col)
 
         self.run_button = QPushButton("▶")
         self.pause_button = QPushButton("⏸")
@@ -1447,6 +1830,12 @@ class MainWindow(QMainWindow):
         self.resume_button.setEnabled(False)
 
         toolbar = QToolBar("Головна панель")
+        new_project_btn = QPushButton("📁 New Project")
+        new_project_btn.setStyleSheet("background-color: #2b6cb0; font-weight: bold; padding: 4px 10px;")
+        new_project_btn.clicked.connect(self.create_pycharm_project)
+        toolbar.addWidget(new_project_btn)
+        toolbar.addSeparator()
+
         toolbar.addWidget(QLabel(" 🚀 Виконання: "))
         toolbar.addWidget(self.run_button)
         toolbar.addWidget(self.pause_button)
@@ -1462,7 +1851,7 @@ class MainWindow(QMainWindow):
         main_split = QSplitter(Qt.Orientation.Horizontal)
         file_dock = QDockWidget("📁 Оглядач проєкту", self)
         file_dock.setWidget(self.tree_view)
-        file_dock.setMinimumWidth(220)
+        file_dock.setMinimumWidth(240)
 
         main_split.addWidget(file_dock)
         main_split.addWidget(editor_splitter)
@@ -1483,13 +1872,33 @@ class MainWindow(QMainWindow):
 
         self.apply_mdpu_theme()
 
-        # Запуск із відкритою робочою вкладкою, без сторонніх прикладів коду
-        self.new_tab(content="", filepath=None)
+    def open_project_directory(self, project_dir: str, file_to_open: str = None):
+        """Встановлює кореневу директорію проєкту у лівому дереві (з папкою venv)."""
+        self.project_path = project_dir
+        root_index = self.fs_model.setRootPath(project_dir)
+        self.tree_view.setRootIndex(root_index)
+        self.tree_view.expand(root_index)
+        self.setWindowTitle(f"PY.R.V.I.S. — [{os.path.basename(project_dir)}]")
+
+        if file_to_open and os.path.exists(file_to_open):
+            try:
+                with open(file_to_open, "r", encoding="utf-8") as f:
+                    self.new_tab(f.read(), file_to_open)
+            except Exception:
+                self.new_tab()
+        elif self.tab_widget.count() == 0:
+            self.new_tab()
 
     def init_menus(self):
         file_menu = self.menuBar().addMenu("📂 Файл")
-        file_menu.addAction("🆕 Новий файл", self.new_tab)
-        file_menu.addAction("📂 Відкрити...", self.open_file_dialog)
+        
+        new_proj_action = QAction("🆕 Створити проєкт (як у PyCharm)...", self)
+        new_proj_action.triggered.connect(self.create_pycharm_project)
+        file_menu.addAction(new_proj_action)
+        file_menu.addSeparator()
+
+        file_menu.addAction("📄 Новий файл", self.new_tab)
+        file_menu.addAction("📂 Відкрити файл...", self.open_file_dialog)
         file_menu.addAction("💾 Зберегти", self.save_file)
         file_menu.addAction("📝 Зберегти як...", self.save_file_as)
         file_menu.addSeparator()
@@ -1500,6 +1909,42 @@ class MainWindow(QMainWindow):
 
         run_menu = self.menuBar().addMenu("▶ Запуск")
         run_menu.addAction("🚀 Запустити код", self.run_code)
+
+    def create_pycharm_project(self):
+        dialog = PyCharmNewProjectDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            project_dir = data["path"]
+            if not project_dir:
+                return
+
+            try:
+                os.makedirs(project_dir, exist_ok=True)
+                if data["create_venv"]:
+                    venv_dir = os.path.join(project_dir, "venv")
+                    scripts_dir = os.path.join(venv_dir, "Scripts" if sys.platform == "win32" else "bin")
+                    lib_dir = os.path.join(venv_dir, "Lib", "site-packages") if sys.platform == "win32" else os.path.join(venv_dir, "lib", "python3.10", "site-packages")
+                    
+                    os.makedirs(scripts_dir, exist_ok=True)
+                    os.makedirs(lib_dir, exist_ok=True)
+
+                    pyvenv_cfg = os.path.join(venv_dir, "pyvenv.cfg")
+                    if not os.path.exists(pyvenv_cfg):
+                        with open(pyvenv_cfg, "w", encoding="utf-8") as f:
+                            f.write(f"home = {os.path.dirname(sys.executable)}\ninclude-system-site-packages = false\nversion = 3.10\n")
+
+                main_file_path = None
+                if data["create_main"]:
+                    main_file_path = os.path.join(project_dir, "main.py")
+                    if not os.path.exists(main_file_path):
+                        with open(main_file_path, "w", encoding="utf-8") as f:
+                            f.write("# Welcome to your project!\n\narr = [10, 20, 30]\nfor i in range(len(arr)):\n    print(f'Element {i}: {arr[i]}')\n")
+
+                self.open_project_directory(project_dir, main_file_path)
+                QMessageBox.information(self, "Проєкт створено", f"Проєкт створено за адресою:\n{project_dir}\n\nПапку 'venv' додано до дерева проєкту.")
+
+            except Exception as e:
+                QMessageBox.critical(self, "Помилка", f"Не вдалося створити проєкт:\n{str(e)}")
 
     def apply_mdpu_theme(self):
         palette = QPalette()
@@ -1562,6 +2007,18 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'project_path') or not self.project_path:
             QMessageBox.warning(self, "⚠️ Немає проєкту", "Спочатку створіть або відкрийте проєкт.")
             return
+
+        file_name, ok = QInputDialog.getText(self, "Новий файл", "Введіть назву файлу (.py):")
+        if ok and file_name:
+            if not file_name.endswith('.py'):
+                file_name += '.py'
+            file_path = os.path.join(self.project_path, file_name)
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write("# " + file_name + "\n")
+                self.new_tab("", file_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Помилка", str(e))
 
     def new_tab(self, content="", filepath=None):
         editor = CodeEditor()
@@ -1725,6 +2182,10 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    win = MainWindow()
-    win.show()
+    
+    # Створюємо головне вікно та перше стартове вікно Welcome (як у PyCharm)
+    main_win = MainWindow()
+    welcome_win = WelcomeWindow(main_win)
+    welcome_win.show()
+    
     sys.exit(app.exec())
