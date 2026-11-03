@@ -699,39 +699,54 @@ class CppUniversalEngine:
             self.current_size = len(self.arrays[var_guess])
             steps.append((list(self.arrays[var_guess]), f"Вхідний відсортований масив: {var_guess} = [5, 12, 18, 25, 33, 47, 56, 68, 79, 91]", False, None, None, None, None, None, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
 
-        while_m = re.search(r"while\s*\(([^)]+)\)", body)
-        if while_m:
-            head_code = body[:while_m.start()]
-            while_cond = while_m.group(1)
-            idx_brace = body.find('{', while_m.end())
-            if idx_brace != -1:
-                depth = 1
-                j = idx_brace + 1
-                while j < len(body) and depth > 0:
-                    if body[j] == '{': depth += 1
-                    elif body[j] == '}': depth -= 1
-                    j += 1
-                while_body = body[idx_brace+1:j-1]
-                tail_code = body[j:]
-
-                self.execute_block(head_code, steps)
-                self.run_while_loop(while_cond, while_body, steps)
-                self.execute_block(tail_code, steps)
-            else:
-                self.execute_block(body, steps)
-        else:
-            self.execute_block(body, steps)
+        self.execute_block(body, steps)
+        if self.current_size is not None and self.main_array_name in self.arrays and len(self.arrays[self.main_array_name]) > self.current_size:
+            self.arrays[self.main_array_name] = self.arrays[self.main_array_name][:self.current_size]
+            steps.append((
+                list(self.arrays[self.main_array_name]),
+                f"Результат обробки / відбору за умовою: відібрано {self.current_size} елементів = {self.arrays[self.main_array_name]}",
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+            ))
 
         return steps
 
+    def clean_condition(self, cond_str):
+        c_clean = str(cond_str)
+        c_clean = re.sub(r"&&", " and ", c_clean)
+        c_clean = re.sub(r"\|\|", " or ", c_clean)
+        c_clean = re.sub(r"!", " not ", c_clean)
+
+        def repl_arr(m):
+            aname = m.group(1)
+            raw_i = m.group(2) or m.group(3)
+            if aname in self.arrays:
+                try:
+                    eval_idx = int(self.eval_expression(raw_i))
+                    arr_ref = self.arrays[aname]
+                    if 0 <= eval_idx < len(arr_ref):
+                        return str(arr_ref[eval_idx])
+                except Exception:
+                    pass
+            return m.group(0)
+
+        c_clean = re.sub(r"\b(\w+)\s*(?:\.at\s*\(([^)]+)\)|\[([^\]]+)\])", repl_arr, c_clean)
+
+        for k, v in self.variables.items():
+            c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
+
+        for name, arr in self.arrays.items():
+            c_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_clean)
+            c_clean = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_clean)
+
+        return c_clean
+
     def run_while_loop(self, cond_str, body_str, steps):
         arr_len = len(self.arrays.get(self.main_array_name, [10]))
-        max_safety = max(1500, arr_len * arr_len * 10)  # Гнучкий безпечний ліміт
+        max_safety = max(1500, arr_len * arr_len * 10)
         count = 0
         while count < max_safety:
-            c_clean = cond_str
-            for k, v in self.variables.items():
-                c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
+            c_clean = self.clean_condition(cond_str)
             try:
                 if not eval(c_clean):
                     break
@@ -756,15 +771,50 @@ class CppUniversalEngine:
             if i >= n:
                 break
 
-            if block_str[i:].startswith("if"):
-                if_head_match = re.match(r"if\s*\(([^)]*)\)", block_str[i:])
-                if if_head_match:
-                    condition_str = if_head_match.group(1)
-                    i += if_head_match.end()
-
+            if block_str[i:].startswith("while"):
+                m_while = re.match(r"while\s*\(", block_str[i:])
+                if m_while:
+                    start_cond = i + m_while.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    condition_str = block_str[start_cond:k_p-1]
+                    i = k_p
                     while i < n and block_str[i].isspace():
                         i += 1
-                    
+                    if i < n and block_str[i] == '{':
+                        depth = 1
+                        j = i + 1
+                        while j < n and depth > 0:
+                            if block_str[j] == '{': depth += 1
+                            elif block_str[j] == '}': depth -= 1
+                            j += 1
+                        while_body = block_str[i+1:j-1]
+                        i = j
+                    else:
+                        j = block_str.find(';', i)
+                        while_body = block_str[i:j+1] if j != -1 else ""
+                        i = j + 1 if j != -1 else n
+                    self.run_while_loop(condition_str, while_body, steps)
+                    continue
+
+            if block_str[i:].startswith("if"):
+                m_if = re.match(r"if\s*\(", block_str[i:])
+                if m_if:
+                    start_cond = i + m_if.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    condition_str = block_str[start_cond:k_p-1]
+                    i = k_p
+                    while i < n and block_str[i].isspace():
+                        i += 1
                     if i < n and block_str[i] == '{':
                         depth = 1
                         j = i + 1
@@ -778,19 +828,23 @@ class CppUniversalEngine:
                         j = block_str.find(';', i)
                         if_body = block_str[i:j+1] if j != -1 else ""
                         i = j + 1 if j != -1 else n
-
                     self.run_if_condition(condition_str, if_body, steps)
                     continue
 
             if block_str[i:].startswith("for"):
-                for_head_match = re.match(r"for\s*\(([^)]*)\)", block_str[i:])
-                if for_head_match:
-                    header = for_head_match.group(1)
-                    i += for_head_match.end()
-
+                m_for = re.match(r"for\s*\(", block_str[i:])
+                if m_for:
+                    start_cond = i + m_for.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    header = block_str[start_cond:k_p-1]
+                    i = k_p
                     while i < n and block_str[i].isspace():
                         i += 1
-                    
                     if i < n and block_str[i] == '{':
                         depth = 1
                         j = i + 1
@@ -804,7 +858,6 @@ class CppUniversalEngine:
                         j = block_str.find(';', i)
                         body_stmt = block_str[i:j+1] if j != -1 else ""
                         i = j + 1 if j != -1 else n
-
                     self.run_for_loop(header, body_stmt, steps)
                     continue
 
@@ -1064,6 +1117,30 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
+        # Standalone inc/dec or compound ops (j--, j++, ++j, --j, j -= 1, j += 1)
+        inc_dec_m = re.match(r"^(\+\+|--)?([a-zA-Z_]\w*)(\+\+|--)?$", s)
+        if inc_dec_m and inc_dec_m.group(2) not in self.arrays:
+            vname = inc_dec_m.group(2)
+            op = inc_dec_m.group(1) or inc_dec_m.group(3)
+            curr = self.get_var(vname, 0)
+            if op == "++":
+                self.set_var(vname, curr + 1)
+            elif op == "--":
+                self.set_var(vname, curr - 1)
+            return
+
+        plus_minus_m = re.match(r"^([a-zA-Z_]\w*)\s*(\+=|-=)\s*(.+)$", s)
+        if plus_minus_m and plus_minus_m.group(1) not in self.arrays and plus_minus_m.group(1) not in ("count", "counter", "matched", "size", "actual_size", "sum"):
+            vname = plus_minus_m.group(1)
+            op = plus_minus_m.group(2)
+            val_add = self.eval_expression(plus_minus_m.group(3))
+            curr = self.get_var(vname, 0)
+            if op == "+=":
+                self.set_var(vname, curr + val_add)
+            elif op == "-=":
+                self.set_var(vname, curr - val_add)
+            return
+
         # Змінні: int temp = a[j], int i = 0, low, high, mid, target
         var_assign_m = re.match(r"^(?:(?:int|double|float|auto|bool|size_t)\s+)?([a-zA-Z_]\w*)\s*=\s*(.+)$", s)
         if var_assign_m:
@@ -1132,6 +1209,20 @@ class CppUniversalEngine:
                     self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
                 return
+
+            if "found" in vname.lower():
+                val_i = int(val_eval)
+                if val_i >= 0:
+                    self.found_index = val_i
+                steps.append((
+                    curr_arr, 
+                    f"Прапорчик пошуку: {vname} = {val_i}", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, None, None
+                ))
+                return
+
+            return  # Return here for all other scalar variables!
 
         # 1. std::binary_search
         bin_search_call = re.match(r"(?:bool\s+\w+\s*=)?\s*(?:std::)?binary_search\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", s)
@@ -1308,23 +1399,30 @@ class CppUniversalEngine:
                         return
 
         # 5. Відбір result[count++] = a[i];
-        filter_push = re.search(r"(\w+)\s*\[\s*(\w+)\s*\+\+\s*\]\s*=\s*(.+)", s)
+        filter_push = re.search(r"(\w+)\s*(?:\.at\s*\(\s*(\w+)\s*\+\+\s*\)|\[\s*(\w+)\s*\+\+\s*\])\s*=\s*(.+)", s)
         if filter_push:
             res_arr_name = filter_push.group(1)
-            cnt_var_name = filter_push.group(2)
-            val_to_add = int(self.eval_expression(filter_push.group(3)))
+            cnt_var_name = filter_push.group(2) or filter_push.group(3)
+            val_to_add = int(self.eval_expression(filter_push.group(4)))
 
-            if res_arr_name not in self.arrays:
-                self.arrays[res_arr_name] = []
+            curr_cnt = self.get_var(cnt_var_name, 0)
+            if res_arr_name not in self.arrays or not self.arrays[res_arr_name]:
+                self.arrays[res_arr_name] = [val_to_add]
+            else:
+                if curr_cnt < len(self.arrays[res_arr_name]):
+                    self.arrays[res_arr_name][curr_cnt] = val_to_add
+                else:
+                    self.arrays[res_arr_name].append(val_to_add)
             
-            self.arrays[res_arr_name].append(val_to_add)
             self.main_array_name = res_arr_name
-            self.set_var(cnt_var_name, self.get_var(cnt_var_name, 0) + 1)
-            self.current_size = len(self.arrays[res_arr_name])
+            self.set_var(cnt_var_name, curr_cnt + 1)
+            self.current_size = curr_cnt + 1
+
+            trimmed = list(self.arrays[res_arr_name][:self.current_size])
 
             steps.append((
-                list(self.arrays[res_arr_name]), 
-                f"Відбір елемента: {res_arr_name}[{self.current_size - 1}] = {val_to_add} (кількість: {self.current_size})", 
+                trimmed, 
+                f"Відбір елемента: {res_arr_name}[{curr_cnt}] = {val_to_add} (кількість: {self.current_size})", 
                 self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
                 self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
             ))
