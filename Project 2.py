@@ -5,7 +5,7 @@ import random
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QGraphicsView, QGraphicsScene,
-    QGraphicsObject, QLabel, QSlider, QGroupBox, QSplitter
+    QGraphicsObject, QGroupBox, QListWidget, QListWidgetItem, QLabel, QSplitter
 )
 from PyQt5.QtCore import (
     QTimer, Qt, QRectF, QPointF, QPropertyAnimation, QParallelAnimationGroup,
@@ -15,7 +15,6 @@ from PyQt5.QtGui import QBrush, QColor, QFont, QPen, QPainter
 
 
 class AnimatedArrayBlock(QGraphicsObject):
-    """Графічний елемент комірки масиву з підтримкою виділення рамки, кольору та текстових значень."""
     def __init__(self, text="", width=65.0, height=40.0, 
                  bg_color="#ffcc66", text_color="#000000", parent=None):
         super().__init__(parent)
@@ -35,7 +34,6 @@ class AnimatedArrayBlock(QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         rect = QRectF(0, 0, self._width, self._height)
-        painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(self._border_color, 1))
         painter.setBrush(QBrush(self._bg_color))
         painter.drawRect(rect)
@@ -58,7 +56,6 @@ class AnimatedArrayBlock(QGraphicsObject):
 
 
 class CartoonAnimationHandler:
-    """Обробник плавної анімації появи, видалення та пульсації блоків із налаштовуваною тривалістю."""
     @staticmethod
     def animate_push_back(block_item, target_pos, duration=320):
         block_item.setTransformOriginPoint(block_item.boundingRect().center())
@@ -102,13 +99,13 @@ class CartoonAnimationHandler:
 
         seq_group = QSequentialAnimationGroup()
         grow_anim = QPropertyAnimation(block_item, b"scale")
-        grow_anim.setDuration(max(10, duration // 2))
+        grow_anim.setDuration(duration // 2)
         grow_anim.setStartValue(1.0)
         grow_anim.setEndValue(1.2)
         grow_anim.setEasingCurve(QEasingCurve.OutQuad)
 
         shrink_anim = QPropertyAnimation(block_item, b"scale")
-        shrink_anim.setDuration(max(10, duration // 2))
+        shrink_anim.setDuration(duration // 2)
         shrink_anim.setStartValue(1.2)
         shrink_anim.setEndValue(1.0)
         shrink_anim.setEasingCurve(QEasingCurve.OutBack)
@@ -119,7 +116,6 @@ class CartoonAnimationHandler:
 
 
 class AdaptiveAnimationWidget(QWidget):
-    """Графічна сцена візуалізації з синхронізацією анімаційних затримок та плавною фіналізацією кроків."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
@@ -139,15 +135,10 @@ class AdaptiveAnimationWidget(QWidget):
         self.base_x = 50.0
         self.base_y = 150.0
         self.active_animation_group = None
-        self.anim_duration = 300
 
         self.metrics_item = None
         self.temp_block = None
         self.temp_label = None
-
-    def set_animation_speed(self, step_interval_ms):
-        """Адаптація тривалості анімації під інтервал таймера відтворення."""
-        self.anim_duration = max(80, int(step_interval_ms * 0.75))
 
     def reset(self):
         if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
@@ -168,22 +159,12 @@ class AdaptiveAnimationWidget(QWidget):
     def get_target_pos(self, index):
         return QPointF(self.base_x + index * (self.block_width + self.spacing), self.base_y)
 
-    def finalize_running_animations(self):
-        """Завершення активних анімацій перед початком нового кроку для уникнення «стрибків» блоків."""
-        if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
-            self.active_animation_group.stop()
-        for block_data in self.current_array_blocks:
-            item = block_data['item']
-            item.setScale(1.0)
-            item.setOpacity(1.0)
-
     def update_variables(self, new_values, step_description="", show_sum_avg=False, 
                          count_metric=None, max_indices=None, current_max_val=None, 
                          temp_val=None, pair_indices=None, show_capacity_size=False,
                          capacity_metric=None, size_metric=None, search_index=None, 
                          found_index=None, binary_range=None, binary_mid=None):
         self.clear_static_layer()
-        self.finalize_running_animations()
         
         # 1. Текстовий коментар до кроку
         if step_description:
@@ -249,19 +230,22 @@ class AdaptiveAnimationWidget(QWidget):
                     bg_color="#9b59b6", text_color="#ffffff"
                 )
                 self.scene.addItem(self.temp_block)
-                anim = CartoonAnimationHandler.animate_push_back(self.temp_block, temp_pos, duration=self.anim_duration)
+                anim = CartoonAnimationHandler.animate_push_back(self.temp_block, temp_pos)
                 anim.start()
             else:
                 self.temp_block.set_text(temp_val)
                 self.temp_block.set_bg_color("#9b59b6")
-                CartoonAnimationHandler.animate_change(self.temp_block, temp_val, "#8e44ad", duration=self.anim_duration).start()
+                CartoonAnimationHandler.animate_change(self.temp_block, temp_val, "#8e44ad").start()
         else:
             if self.temp_block:
-                CartoonAnimationHandler.animate_pop(self.temp_block, self.scene, duration=self.anim_duration).start()
+                CartoonAnimationHandler.animate_pop(self.temp_block, self.scene).start()
                 self.temp_block = None
             if self.temp_label:
                 self.scene.removeItem(self.temp_label)
                 self.temp_label = None
+
+        if self.active_animation_group and self.active_animation_group.state() == QParallelAnimationGroup.Running:
+            self.active_animation_group.stop()
 
         anim_group = QParallelAnimationGroup(self)
         old_count = len(self.current_array_blocks)
@@ -281,16 +265,16 @@ class AdaptiveAnimationWidget(QWidget):
             if found_index is not None and i == found_index:
                 target_color = "#2ecc71"  # Знайдений елемент (зелений)
             elif binary_mid is not None and i == binary_mid:
-                target_color = "#e67e22"  # Центральний елемент mid (помаранчевий)
+                target_color = "#e67e22"  # Центральний елемент mid
             elif binary_range is not None:
                 if binary_range[0] <= i <= binary_range[1]:
-                    target_color = "#3498db"  # Активний робочий діапазон (синій)
+                    target_color = "#3498db"  # Активний робочий діапазон
                 else:
                     target_color = "#bdc3c7"  # Відкинутий діапазон (сірий)
             elif search_index is not None and i == search_index:
-                target_color = "#f1c40f"  # Сканування у лінійному пошуку (жовтий)
+                target_color = "#f1c40f"  # Сканування у лінійному пошуку
             elif i in pair_idx_set:
-                target_color = "#e056fd"  # Активна пара сортування/обміну (фіолетовий)
+                target_color = "#e056fd"  # Активна пара сортування/обміну
             elif i in max_idx_set:
                 target_color = "#f39c12"  # Максимум
             else:
@@ -298,7 +282,7 @@ class AdaptiveAnimationWidget(QWidget):
 
             if old_val != new_val:
                 block_data['value'] = new_val
-                pulse_anim = CartoonAnimationHandler.animate_change(block_item, new_val, target_color, duration=self.anim_duration)
+                pulse_anim = CartoonAnimationHandler.animate_change(block_item, new_val, target_color)
                 anim_group.addAnimation(pulse_anim)
             else:
                 block_item.set_bg_color(target_color)
@@ -310,7 +294,7 @@ class AdaptiveAnimationWidget(QWidget):
                 color = "#2ecc71" if found_index == i else ("#e056fd" if i in pair_idx_set else ("#f39c12" if i in max_idx_set else "#99ff99"))
                 new_block = AnimatedArrayBlock(text=val, width=self.block_width, height=self.block_height, bg_color=color)
                 self.scene.addItem(new_block)
-                bounce_anim = CartoonAnimationHandler.animate_push_back(new_block, target_pos, duration=self.anim_duration)
+                bounce_anim = CartoonAnimationHandler.animate_push_back(new_block, target_pos)
                 anim_group.addAnimation(bounce_anim)
                 self.current_array_blocks.append({'item': new_block, 'value': val})
 
@@ -320,7 +304,7 @@ class AdaptiveAnimationWidget(QWidget):
             for block_data in blocks_to_remove:
                 block_item = block_data['item']
                 block_item.set_bg_color("#e74c3c")
-                anim_group.addAnimation(CartoonAnimationHandler.animate_pop(block_item, self.scene, duration=self.anim_duration))
+                anim_group.addAnimation(CartoonAnimationHandler.animate_pop(block_item, self.scene))
 
         for i, block_data in enumerate(self.current_array_blocks):
             if i < len(new_values):
@@ -344,16 +328,115 @@ class CppIterator:
         return CppIterator(self.container_name, self.index, self.is_reverse)
 
 
+class StepList(list):
+    """Спеціальний список кроків симуляції з прив'язкою до активного коментаря C++."""
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+
+    def append(self, item):
+        if isinstance(item, tuple):
+            item_list = list(item)
+            while len(item_list) < 15:
+                item_list.append(None)
+            
+            curr_stmt = getattr(self.engine, 'current_stmt', '')
+            comm = self.engine.get_comment_for_stmt(curr_stmt)
+            if len(item_list) == 15:
+                item_list.append(comm)
+            elif len(item_list) >= 16:
+                if item_list[15] is None:
+                    item_list[15] = comm
+            super().append(tuple(item_list))
+        else:
+            super().append(item)
+
+
 class CppUniversalEngine:
     """
-    Універсальний симулятор та інтерпретатор коду C++20:
-    - Стек областей видимості (Scope Stack) для коректної обробки вкладених блоків та змінних
-    - Динамічні безпечні ліміти ітерацій відповідно до розмірів масивів
-    - Дійсна діагностика синтаксису з виведенням попереджень та помилок обчислення
-    - Підтримка всіх видів сортування, бінарного/лінійного пошуків, векторів та стандартних бібліотек C++20
+    Універсальний симулятор коду C++:
+    - Двійковий (бінарний) пошук (low, high, mid, a[mid] == target, std::binary_search)
+    - Лінійний пошук (перегляд зліва направо, std::find)
+    - Бібліотека <algorithm>: std::sort, std::stable_sort, std::reverse, std::max_element, count_if, count
+    - Бібліотека <utility>: std::swap
+    - Алгоритми сортування: Bubble sort, Selection sort, Insertion sort
+    - Відбір за умовою з контролем місткості (capacity) та кількості (size/count)
+    - Циклічний зсув ліворуч, буфер temp, ітератори, array, vector
     """
+    def extract_all_comments(self, code_text):
+        """Збір абсолютно всіх коментарів програми C++ для показу в окремій панелі."""
+        comments_list = []
+        lines = code_text.splitlines()
+        for idx, line in enumerate(lines, start=1):
+            s_line = line.strip()
+            if "//" in s_line:
+                code_p, comm_p = s_line.split("//", 1)
+                comm_p = comm_p.strip()
+                if comm_p:
+                    comments_list.append({
+                        "line": idx,
+                        "type": "//",
+                        "comment": f"// {comm_p}",
+                        "code": code_p.strip() or s_line
+                    })
+            elif "/*" in s_line and "*/" in s_line:
+                m = re.search(r"/\*(.*?)\*/", s_line)
+                if m:
+                    comm_p = m.group(1).strip()
+                    code_p = re.sub(r"/\*.*?\*/", "", s_line).strip()
+                    if comm_p:
+                        comments_list.append({
+                            "line": idx,
+                            "type": "/*",
+                            "comment": f"/* {comm_p} */",
+                            "code": code_p or s_line
+                        })
+        return comments_list
+
+    def get_comment_for_stmt(self, stmt):
+        if not stmt:
+            return None
+        stmt_clean = " ".join(stmt.split()).strip()
+        for code_p, comm in self.line_comments.items():
+            if code_p and (code_p in stmt_clean or stmt_clean in code_p):
+                return comm
+        return None
+
+    def clean_condition(self, cond_str):
+        c_clean = str(cond_str)
+        c_clean = re.sub(r"&&", " and ", c_clean)
+        c_clean = re.sub(r"\|\|", " or ", c_clean)
+        c_clean = re.sub(r"!", " not ", c_clean)
+
+        def repl_arr(m):
+            aname = m.group(1)
+            raw_i = m.group(2) or m.group(3)
+            if aname in self.arrays:
+                try:
+                    eval_idx = int(self.eval_expression(raw_i))
+                    arr_ref = self.arrays[aname]
+                    if 0 <= eval_idx < len(arr_ref):
+                        return str(arr_ref[eval_idx])
+                except Exception:
+                    pass
+            return m.group(0)
+
+        c_clean = re.sub(r"\b(\w+)\s*(?:\.at\s*\(([^)]+)\)|\[([^\]]+)\])", repl_arr, c_clean)
+
+        for k, v in self.variables.items():
+            c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
+
+        for name, arr in self.arrays.items():
+            c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), c_clean)
+            c_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_clean)
+            c_clean = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_clean)
+
+        return c_clean
+
     def __init__(self):
-        self.scopes = [{}]  # Стек областей видимості
+        self.scopes = [{}]
+        self.line_comments = {}
+        self.current_stmt = ""
         self.iterators = {}
         self.arrays = {}
         self.main_array_name = "arr"
@@ -377,34 +460,28 @@ class CppUniversalEngine:
         self.search_target = None
         self.binary_range = None
         self.binary_mid = None
-        self.last_eval_error = None
 
     @property
     def variables(self):
-        """Агрегований словник усіх діючих змінних з урахуванням вкладених областей видимості."""
         res = {}
         for scope in self.scopes:
             res.update(scope)
         return res
 
     def push_scope(self):
-        """Створення нової вкладеної області видимості (наприклад, при вході у блок циклу чи умови)."""
         self.scopes.append({})
 
     def pop_scope(self):
-        """Вихід із вкладеної області видимості з очищенням її локальних змінних."""
         if len(self.scopes) > 1:
             self.scopes.pop()
 
     def get_var(self, name, default=0):
-        """Пошук значення змінної, починаючи з найближчої вкладеної області видимості."""
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
         return default
 
     def set_var(self, name, val, is_decl=False):
-        """Присвоєння значення змінній у відповідній області видимості."""
         if is_decl or not self.scopes:
             self.scopes[-1][name] = val
         else:
@@ -418,23 +495,7 @@ class CppUniversalEngine:
         no_block_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         no_line_comments = re.sub(r"//.*", "", no_block_comments)
         
-        # Розбиття комбінованих оголошень int low = 0, high = 7;
-        def repl_comma_decls(m):
-            type_str = m.group(1)
-            rest = m.group(2)
-            if "{" in rest:
-                return m.group(0)
-            parts = rest.split(",")
-            out = []
-            for p in parts:
-                p = p.strip().rstrip(";")
-                if p:
-                    if not p.startswith(type_str):
-                        p = f"{type_str} {p}"
-                    out.append(p)
-            return "; ".join(out) + ";"
-
-        normalized = re.sub(r"\b(int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_line_comments)
+        normalized = no_line_comments
         normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
         normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
         normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
@@ -529,10 +590,10 @@ class CppUniversalEngine:
         if not expr:
             return 0
 
-        # C++ цілочисельне ділення / N -> // N
-        expr = re.sub(r"/\s*(\d+)", r"// \1", expr)
+        for name, arr in self.arrays.items():
+            expr = re.sub(rf"\b(?:std\s*::\s*)?(?:ssize|size)\s*\(\s*{name}\s*\)", str(len(arr)), expr)
 
-        self.last_eval_error = None
+        expr = re.sub(r"/\s*(\d+)", r"// \1", expr)
 
         # std::max_element
         max_el_m = re.search(r"(?:std::)?max_element\s*\(([^,]+),\s*([^)]+)\)", expr)
@@ -605,29 +666,21 @@ class CppUniversalEngine:
 
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        # Точно підставляємо розраховані значення для a[expr] та a.at(expr)
-        def repl_array_access(m):
-            aname = m.group(1)
-            raw_i = m.group(2) or m.group(3)
-            if aname in self.arrays:
-                try:
-                    eval_idx = int(self.eval_expression(raw_i))
-                    arr_ref = self.arrays[aname]
-                    if 0 <= eval_idx < len(arr_ref):
-                        return str(arr_ref[eval_idx])
-                except Exception:
-                    pass
-            return m.group(0)
-
-        expr = re.sub(r"\b(\w+)\s*(?:\[([^\]]+)\]|\.at\s*\(([^)]+)\))", repl_array_access, expr)
+        for name, arr in self.arrays.items():
+            at_reads = re.findall(rf"\b{name}\.at\s*\(\s*([^)]+)\s*\)", expr)
+            for raw_idx in at_reads:
+                eval_i = int(self.eval_expression(raw_idx))
+                val_at = arr[eval_i] if 0 <= eval_i < len(arr) else 0
+                expr = re.sub(rf"\b{name}\.at\s*\(\s*{re.escape(raw_idx)}\s*\)", str(val_at), expr)
 
         for name, arr in self.arrays.items():
-            expr = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), expr)
             if arr:
                 expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
                 expr = re.sub(rf"\b{name}\.back\s*\(\s*\)", str(arr[-1]), expr)
             expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), expr)
             expr = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), expr)
+            for idx, val in enumerate(arr):
+                expr = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), expr)
 
         expr = re.sub(r"\(\s*(?:double|float|int)\s*\)", "", expr)
         expr = re.sub(r"static_cast\s*<\s*(?:double|float|int)\s*>\s*\(([^)]+)\)", r"(\1)", expr)
@@ -650,14 +703,31 @@ class CppUniversalEngine:
         try:
             res = eval(expr, {"__builtins__": {}}, env)
             return float(res) if isinstance(res, float) else int(res)
-        except Exception as e:
-            self.last_eval_error = f"Обчислення '{expr_str}': {e}"
+        except Exception:
             if "dist" in expr or "gen" in expr:
                 return random.randint(self.random_min, self.random_max)
             return 0
 
     def run(self, code_text):
         self.scopes = [{}]
+        self.line_comments.clear()
+        self.current_stmt = ""
+        steps = StepList(self)
+
+        for line in code_text.splitlines():
+            line_str = line.strip()
+            if "//" in line_str:
+                code_p, comm_p = line_str.split("//", 1)
+                code_p, comm_p = code_p.strip(), comm_p.strip()
+                if comm_p:
+                    self.line_comments[code_p] = f"// {comm_p}"
+            elif "/*" in line_str and "*/" in line_str:
+                m_comm = re.search(r"/\*(.*?)\*/", line_str)
+                if m_comm:
+                    comm_p = m_comm.group(1).strip()
+                    code_p = re.sub(r"/\*.*?\*/", "", line_str).strip()
+                    if comm_p:
+                        self.line_comments[code_p] = f"/* {comm_p} */"
         self.iterators.clear()
         self.arrays.clear()
         self.main_array_name = "arr"
@@ -674,8 +744,7 @@ class CppUniversalEngine:
         self.search_target = None
         self.binary_range = None
         self.binary_mid = None
-        self.last_eval_error = None
-        steps = []
+
 
         code = self.clean_code(code_text)
         self.detect_features(code)
@@ -689,7 +758,7 @@ class CppUniversalEngine:
         body = main_match.group(1) if main_match else code
 
         # Автоматичне створення тестового масиву, якщо немає явного оголошення
-        has_decl = bool(re.search(r"(?:int|auto|vector|array)\s+\w+\s*\[|\bvector\s*<|\barray\s*<|\bto_array\b", body))
+        has_decl = bool(re.search(r"(?:int|auto|vector|array)\s+\w+\s*\[|\bvector\s*<|\barray\s*<", body))
         if not has_decl and ("a[" in body or "arr[" in body or "binary" in body or "mid" in body):
             var_guess = "a" if "a[" in body else "arr"
             self.main_array_name = var_guess
@@ -701,54 +770,16 @@ class CppUniversalEngine:
             steps.append((list(self.arrays[var_guess]), f"Вхідний відсортований масив: {var_guess} = [5, 12, 18, 25, 33, 47, 56, 68, 79, 91]", False, None, None, None, None, None, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
 
         self.execute_block(body, steps)
-        if self.current_size is not None and self.main_array_name in self.arrays and len(self.arrays[self.main_array_name]) > self.current_size:
-            self.arrays[self.main_array_name] = self.arrays[self.main_array_name][:self.current_size]
-            steps.append((
-                list(self.arrays[self.main_array_name]),
-                f"Результат обробки / відбору за умовою: відібрано {self.current_size} елементів = {self.arrays[self.main_array_name]}",
-                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
-                self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-            ))
 
         return steps
 
-    def clean_condition(self, cond_str):
-        c_clean = str(cond_str)
-        c_clean = re.sub(r"&&", " and ", c_clean)
-        c_clean = re.sub(r"\|\|", " or ", c_clean)
-        c_clean = re.sub(r"!", " not ", c_clean)
-
-        def repl_arr(m):
-            aname = m.group(1)
-            raw_i = m.group(2) or m.group(3)
-            if aname in self.arrays:
-                try:
-                    eval_idx = int(self.eval_expression(raw_i))
-                    arr_ref = self.arrays[aname]
-                    if 0 <= eval_idx < len(arr_ref):
-                        return str(arr_ref[eval_idx])
-                except Exception:
-                    pass
-            return m.group(0)
-
-        c_clean = re.sub(r"\b(\w+)\s*(?:\.at\s*\(([^)]+)\)|\[([^\]]+)\])", repl_arr, c_clean)
-
-        for k, v in self.variables.items():
-            c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
-
-        for name, arr in self.arrays.items():
-            c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), c_clean)
-            c_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_clean)
-            c_clean = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_clean)
-
-        return c_clean
-
     def run_while_loop(self, cond_str, body_str, steps):
-        arr_len = len(self.arrays.get(self.main_array_name, [10]))
-        max_safety = max(1500, arr_len * arr_len * 10)
+        max_safety = 50
         count = 0
         while count < max_safety:
-            c_clean = self.clean_condition(cond_str)
+            c_clean = cond_str
+            for k, v in self.variables.items():
+                c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
             try:
                 if not eval(c_clean):
                     break
@@ -758,9 +789,7 @@ class CppUniversalEngine:
             if self.found_index is not None and "break" in body_str:
                 break
 
-            self.push_scope()
             self.execute_block(body_str, steps)
-            self.pop_scope()
             count += 1
 
     def execute_block(self, block_str, steps):
@@ -875,24 +904,15 @@ class CppUniversalEngine:
                 self.execute_statement(stmt, steps)
 
     def run_if_condition(self, cond_expr, body_stmt, steps):
-        cond_clean = cond_expr
-
-        def repl_arr(m):
-            aname = m.group(1)
-            raw_i = m.group(2) or m.group(3)
-            if aname in self.arrays:
-                try:
-                    eval_idx = int(self.eval_expression(raw_i))
-                    arr_ref = self.arrays[aname]
-                    if 0 <= eval_idx < len(arr_ref):
-                        return str(arr_ref[eval_idx])
-                except Exception:
-                    pass
-            return m.group(0)
-
-        cond_clean = re.sub(r"\b(\w+)\s*(?:\[([^\]]+)\]|\.at\s*\(([^)]+)\))", repl_arr, cond_clean)
+        self.current_stmt = f"if ({cond_expr})"
+        cond_clean = self.clean_condition(cond_expr)
         for k, v in self.variables.items():
             cond_clean = re.sub(rf"\b{k}\b", str(v), cond_clean)
+        for name, arr in self.arrays.items():
+            cond_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), cond_clean)
+            for idx, val in enumerate(arr):
+                cond_clean = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), cond_clean)
+                cond_clean = re.sub(rf"\b{name}\.at\s*\(\s*{idx}\s*\)", str(val), cond_clean)
 
         try:
             cond_result = bool(eval(cond_clean))
@@ -906,7 +926,7 @@ class CppUniversalEngine:
         is_binary_match = bool(re.search(r"mid", cond_expr.lower()) and "==" in cond_expr)
         is_binary_less_or_more = bool(re.search(r"mid", cond_expr.lower()) and ("<" in cond_expr or ">" in cond_expr))
         is_search_cond = bool(re.search(r"==\s*target|target\s*==|==\s*key|key\s*==", cond_expr) and ("[" in cond_expr or ".at" in cond_expr)) and not is_binary_match
-        is_sort_cond = bool(re.search(r"\[[^\]]+\]\s*>\s*[^[]*\[[^\]]+\]|\.at\([^)]+\)\s*>\s*[^.]*\.at\([^)]+\)", cond_expr))
+        is_sort_cond = bool(re.search(r"\[.+\]\s*>\s*\[.+\]|\.at\(.+\)\s*>\s*\.at\(.+\)", cond_expr))
         is_max_cond = bool(re.search(r">\s*max|max\s*<", cond_expr.lower()))
         is_filter_cond = bool(re.search(r">\s*0|<\s*0|%\s*2\s*==|!=\s*0|count\s*<|size\s*<|capacity", cond_expr.lower()))
 
@@ -926,7 +946,7 @@ class CppUniversalEngine:
 
         if cond_result:
             if is_binary_match:
-                mid_val = int(self.get_var("mid", 0))
+                mid_val = self.get_var("mid", 0)
                 self.found_index = mid_val
                 steps.append((
                     curr_arr, 
@@ -935,7 +955,7 @@ class CppUniversalEngine:
                     self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, self.binary_range, self.binary_mid
                 ))
             elif is_binary_less_or_more:
-                mid_val = int(self.get_var("mid", 0))
+                mid_val = self.get_var("mid", 0)
                 steps.append((
                     curr_arr, 
                     f"Двійковий пошук: ({cond_expr}) -> ТАК. Звуження меж пошуку.", 
@@ -946,7 +966,7 @@ class CppUniversalEngine:
                 self.found_index = curr_i
                 steps.append((
                     curr_arr, 
-                    f"Лінійний пошук: ЕЛЕМЕНТ ЗНАЙДЕНО у {target_arr_name}[{curr_i}] = {curr_arr[curr_i]}! (break)", 
+                    f"Лінійний пошук: ЕЛЕМЕНТ ЗНАЙДЕНО на позиції [{curr_i}] = {curr_arr[curr_i]}! (break)", 
                     self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
                     self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, None, None
                 ))
@@ -958,17 +978,15 @@ class CppUniversalEngine:
                     self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
             
-            self.push_scope()
             self.execute_block(body_stmt, steps)
-            self.pop_scope()
 
             if "low" in self.variables and "high" in self.variables:
-                self.binary_range = [self.get_var("low"), self.get_var("high")]
+                self.binary_range = [self.variables["low"], self.variables["high"]]
 
             if is_max_cond:
                 for k in self.variables:
                     if "max" in k.lower():
-                        self.current_max_val = self.get_var(k)
+                        self.current_max_val = self.variables[k]
                         break
                 if self.current_max_val is not None:
                     self.max_indices = [idx for idx, val in enumerate(curr_arr) if val == self.current_max_val]
@@ -979,7 +997,7 @@ class CppUniversalEngine:
                     self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
             elif is_filter_cond:
-                cnt_val = self.get_var("count", self.get_var("size", self.condition_count))
+                cnt_val = self.get_var("count", self.variables.get("size", self.condition_count))
                 self.current_size = cnt_val
                 steps.append((
                     curr_arr, 
@@ -989,7 +1007,7 @@ class CppUniversalEngine:
                 ))
         else:
             if is_binary_match:
-                mid_val = int(self.get_var("mid", 0))
+                mid_val = self.get_var("mid", 0)
                 steps.append((
                     curr_arr, 
                     f"Двійковий пошук: {self.main_array_name}[mid={mid_val}] ({curr_arr[mid_val]}) != target. Продовжуємо поділ навпіл.", 
@@ -1015,7 +1033,7 @@ class CppUniversalEngine:
             elif is_max_cond:
                 steps.append((curr_arr, f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
             elif is_filter_cond:
-                cnt_val = self.get_var("count", self.get_var("size", self.condition_count))
+                cnt_val = self.get_var("count", self.variables.get("size", self.condition_count))
                 steps.append((
                     curr_arr, 
                     f"Відбір: Умова ({cond_expr}) -> НЕ підходить (пропущено).", 
@@ -1065,7 +1083,7 @@ class CppUniversalEngine:
             self.set_var(iter_var, int(self.eval_expression(rhs)), is_decl=True)
 
         arr_len = len(self.arrays.get(self.main_array_name, [10]))
-        max_safety_iterations = max(1500, arr_len * arr_len * 10)  # Гнучкий безпечний ліміт
+        max_safety_iterations = max(1500, arr_len * arr_len * 10)
         it_count = 0
 
         while it_count < max_safety_iterations:
@@ -1080,9 +1098,10 @@ class CppUniversalEngine:
                     if target_end and it_obj.index == target_end.index:
                         break
             else:
+                self.current_stmt = f"for ({header})"
                 c_expr = self.clean_condition(cond_part)
                 try:
-                    if not eval(c_expr):
+                    if not eval(self.clean_condition(cond_part)):
                         break
                 except Exception:
                     break
@@ -1110,36 +1129,345 @@ class CppUniversalEngine:
             it_count += 1
 
         self.pop_scope()
+    def execute_block(self, block_str, steps):
+        i = 0
+        n = len(block_str)
+
+        while i < n:
+            while i < n and block_str[i].isspace():
+                i += 1
+            if i >= n:
+                break
+
+            if block_str[i:].startswith("while"):
+                m_while = re.match(r"while\s*\(", block_str[i:])
+                if m_while:
+                    start_cond = i + m_while.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    condition_str = block_str[start_cond:k_p-1]
+                    i = k_p
+                    while i < n and block_str[i].isspace():
+                        i += 1
+                    if i < n and block_str[i] == '{':
+                        depth = 1
+                        j = i + 1
+                        while j < n and depth > 0:
+                            if block_str[j] == '{': depth += 1
+                            elif block_str[j] == '}': depth -= 1
+                            j += 1
+                        while_body = block_str[i+1:j-1]
+                        i = j
+                    else:
+                        j = block_str.find(';', i)
+                        while_body = block_str[i:j+1] if j != -1 else ""
+                        i = j + 1 if j != -1 else n
+                    self.run_while_loop(condition_str, while_body, steps)
+                    continue
+
+            if block_str[i:].startswith("if"):
+                m_if = re.match(r"if\s*\(", block_str[i:])
+                if m_if:
+                    start_cond = i + m_if.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    condition_str = block_str[start_cond:k_p-1]
+                    i = k_p
+                    while i < n and block_str[i].isspace():
+                        i += 1
+                    if i < n and block_str[i] == '{':
+                        depth = 1
+                        j = i + 1
+                        while j < n and depth > 0:
+                            if block_str[j] == '{': depth += 1
+                            elif block_str[j] == '}': depth -= 1
+                            j += 1
+                        if_body = block_str[i+1:j-1]
+                        i = j
+                    else:
+                        j = block_str.find(';', i)
+                        if_body = block_str[i:j+1] if j != -1 else ""
+                        i = j + 1 if j != -1 else n
+                    self.run_if_condition(condition_str, if_body, steps)
+                    continue
+
+            if block_str[i:].startswith("for"):
+                m_for = re.match(r"for\s*\(", block_str[i:])
+                if m_for:
+                    start_cond = i + m_for.end()
+                    depth_p = 1
+                    k_p = start_cond
+                    while k_p < n and depth_p > 0:
+                        if block_str[k_p] == '(': depth_p += 1
+                        elif block_str[k_p] == ')': depth_p -= 1
+                        k_p += 1
+                    header = block_str[start_cond:k_p-1]
+                    i = k_p
+                    while i < n and block_str[i].isspace():
+                        i += 1
+                    if i < n and block_str[i] == '{':
+                        depth = 1
+                        j = i + 1
+                        while j < n and depth > 0:
+                            if block_str[j] == '{': depth += 1
+                            elif block_str[j] == '}': depth -= 1
+                            j += 1
+                        body_stmt = block_str[i+1:j-1]
+                        i = j
+                    else:
+                        j = block_str.find(';', i)
+                        body_stmt = block_str[i:j+1] if j != -1 else ""
+                        i = j + 1 if j != -1 else n
+                    self.run_for_loop(header, body_stmt, steps)
+                    continue
+
+            semi_pos = block_str.find(';', i)
+            if semi_pos == -1:
+                stmt = block_str[i:].strip()
+                i = n
+            else:
+                stmt = block_str[i:semi_pos].strip()
+                i = semi_pos + 1
+
+            if stmt:
+                self.execute_statement(stmt, steps)
+
+    def run_if_condition(self, cond_expr, body_stmt, steps):
+        self.current_stmt = f"if ({cond_expr})"
+        cond_clean = self.clean_condition(cond_expr)
+        for k, v in self.variables.items():
+            cond_clean = re.sub(rf"\b{k}\b", str(v), cond_clean)
+        for name, arr in self.arrays.items():
+            cond_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), cond_clean)
+            for idx, val in enumerate(arr):
+                cond_clean = re.sub(rf"\b{name}\s*\[\s*{idx}\s*\]", str(val), cond_clean)
+                cond_clean = re.sub(rf"\b{name}\.at\s*\(\s*{idx}\s*\)", str(val), cond_clean)
+
+        try:
+            cond_result = bool(eval(cond_clean))
+        except Exception:
+            cond_result = False
+
+        curr_arr = list(self.arrays.get(self.main_array_name, []))
+        
+        is_binary_match = bool(re.search(r"mid", cond_expr.lower()) and "==" in cond_expr)
+        is_binary_less_or_more = bool(re.search(r"mid", cond_expr.lower()) and ("<" in cond_expr or ">" in cond_expr))
+        is_search_cond = bool(re.search(r"==\s*target|target\s*==|==\s*key|key\s*==", cond_expr) and ("[" in cond_expr or ".at" in cond_expr)) and not is_binary_match
+        is_sort_cond = bool(re.search(r"\[.+\]\s*>\s*\[.+\]|\.at\(.+\)\s*>\s*\.at\(.+\)", cond_expr))
+        is_max_cond = bool(re.search(r">\s*max|max\s*<", cond_expr.lower()))
+        is_filter_cond = bool(re.search(r">\s*0|<\s*0|%\s*2\s*==|!=\s*0|count\s*<|size\s*<|capacity", cond_expr.lower()))
+
+        curr_i = None
+        idx_search_match = re.search(r"\[\s*(\w+)\s*\]|\.at\s*\(\s*(\w+)\s*\)", cond_expr)
+        if idx_search_match:
+            raw_v = idx_search_match.group(1) or idx_search_match.group(2)
+            curr_i = self.get_var(raw_v, None) if not raw_v.isdigit() else int(raw_v)
+
+        if is_search_cond and curr_i is not None and 0 <= curr_i < len(curr_arr):
+            self.search_index = curr_i
+
+        if is_sort_cond:
+            idxs = [int(self.eval_expression(x)) for x in re.findall(r"\[([^\]]+)\]|\.at\s*\(([^)]+)\)", cond_expr) if x]
+            if len(idxs) >= 2:
+                self.active_pair = [idxs[0], idxs[1]]
+
+        if cond_result:
+            if is_binary_match:
+                mid_val = self.get_var("mid", 0)
+                self.found_index = mid_val
+                steps.append((
+                    curr_arr, 
+                    f"Двійковий пошук: ЕЛЕМЕНТ ЗНАЙДЕНО! {self.main_array_name}[mid={mid_val}] == target ({curr_arr[mid_val]})", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, self.binary_range, self.binary_mid
+                ))
+            elif is_binary_less_or_more:
+                mid_val = self.get_var("mid", 0)
+                steps.append((
+                    curr_arr, 
+                    f"Двійковий пошук: ({cond_expr}) -> ТАК. Звуження меж пошуку.", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, self.binary_range, self.binary_mid
+                ))
+            elif is_search_cond:
+                self.found_index = curr_i
+                steps.append((
+                    curr_arr, 
+                    f"Лінійний пошук: ЕЛЕМЕНТ ЗНАЙДЕНО на позиції [{curr_i}] = {curr_arr[curr_i]}! (break)", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, None, None
+                ))
+            elif is_sort_cond:
+                steps.append((
+                    curr_arr, 
+                    f"Сортування: умова ({cond_expr}) -> ТАК. Потрібен обмін елементів!", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+            
+            self.execute_block(body_stmt, steps)
+
+            if "low" in self.variables and "high" in self.variables:
+                self.binary_range = [self.variables["low"], self.variables["high"]]
+
+            if is_max_cond:
+                for k in self.variables:
+                    if "max" in k.lower():
+                        self.current_max_val = self.variables[k]
+                        break
+                if self.current_max_val is not None:
+                    self.max_indices = [idx for idx, val in enumerate(curr_arr) if val == self.current_max_val]
+                steps.append((
+                    curr_arr, 
+                    f"Знайдено новий максимум: {self.current_max_val} [індекс(и): {', '.join(map(str, self.max_indices))}]", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+            elif is_filter_cond:
+                cnt_val = self.get_var("count", self.variables.get("size", self.condition_count))
+                self.current_size = cnt_val
+                steps.append((
+                    curr_arr, 
+                    f"Відбір: Умова ({cond_expr}) -> ПІДХОДИТЬ. Елемент відібрано! Кількість: {cnt_val}", 
+                    self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+        else:
+            if is_binary_match:
+                mid_val = self.get_var("mid", 0)
+                steps.append((
+                    curr_arr, 
+                    f"Двійковий пошук: {self.main_array_name}[mid={mid_val}] ({curr_arr[mid_val]}) != target. Продовжуємо поділ навпіл.", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, self.binary_range, self.binary_mid
+                ))
+            elif is_search_cond:
+                val_now = curr_arr[curr_i] if (curr_i is not None and 0 <= curr_i < len(curr_arr)) else ""
+                steps.append((
+                    curr_arr, 
+                    f"Лінійний пошук: перевірка зліва направо [{curr_i}] = {val_now} (не збігається)", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, self.search_index, None, None, None
+                ))
+            elif is_sort_cond:
+                steps.append((
+                    curr_arr, 
+                    f"Сортування: умова ({cond_expr}) -> НІ. Елементи вже впорядковані.", 
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+                self.active_pair = None
+            elif is_max_cond:
+                steps.append((curr_arr, f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
+            elif is_filter_cond:
+                cnt_val = self.get_var("count", self.variables.get("size", self.condition_count))
+                steps.append((
+                    curr_arr, 
+                    f"Відбір: Умова ({cond_expr}) -> НЕ підходить (пропущено).", 
+                    self.has_sum_avg, cnt_val, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+
+    def run_for_loop(self, header, body, steps):
+        if ":" in header and ";" not in header:
+            var_part, cont_part = [p.strip() for p in header.split(":", 1)]
+            var_name = var_part.replace("&", "").split()[-1].strip()
+            cont_name = cont_part.strip()
+            if cont_name in self.arrays:
+                arr = self.arrays[cont_name]
+                for idx in range(len(arr)):
+                    self.set_var(var_name, arr[idx])
+                    self.execute_block(body, steps)
+                    if "&" in var_part and self.get_var(var_name) != arr[idx]:
+                        old = arr[idx]
+                        arr[idx] = self.variables[var_name]
+                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
+            return
+
+        parts = header.split(';')
+        if len(parts) != 3:
+            return
+
+        init_part, cond_part, inc_part = [p.strip() for p in parts]
+        
+        is_iter_loop = False
+        loop_iter_name = ""
+
+        if ("iterator" in init_part or "auto" in init_part) and "=" in init_part:
+            lhs, rhs = init_part.split('=', 1)
+            loop_iter_name = lhs.split()[-1].strip()
+            it_obj = self.resolve_iterator_expr(rhs)
+            if it_obj:
+                self.iterators[loop_iter_name] = it_obj
+                is_iter_loop = True
+        elif "=" in init_part:
+            lhs, rhs = init_part.split('=', 1)
+            iter_var = lhs.split()[-1].strip()
+            self.set_var(iter_var, int(self.eval_expression(rhs)), is_decl=True)
+
+        max_safety_iterations = 80
+        it_count = 0
+
+        while it_count < max_safety_iterations:
+            if self.found_index is not None and "break" in body:
+                break
+
+            if is_iter_loop and loop_iter_name in self.iterators:
+                it_obj = self.iterators[loop_iter_name]
+                end_match = re.search(r"!=\s*([^;]+)", cond_part)
+                if end_match:
+                    target_end = self.resolve_iterator_expr(end_match.group(1))
+                    if target_end and it_obj.index == target_end.index:
+                        break
+            else:
+                c_expr = cond_part
+                for k, v in self.variables.items():
+                    c_expr = re.sub(rf"\b{k}\b", str(v), c_expr)
+                for name, arr in self.arrays.items():
+                    c_expr = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_expr)
+                    c_expr = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_expr)
+                try:
+                    if not eval(self.clean_condition(cond_part)):
+                        break
+                except Exception:
+                    break
+
+            self.execute_block(body, steps)
+
+            if is_iter_loop and loop_iter_name in self.iterators:
+                it_obj = self.iterators[loop_iter_name]
+                if "++" in inc_part:
+                    it_obj.index += (-1 if it_obj.is_reverse else 1)
+                elif "--" in inc_part:
+                    it_obj.index -= (-1 if it_obj.is_reverse else 1)
+            else:
+                if "++" in inc_part:
+                    vname = inc_part.replace("++", "").strip()
+                    self.set_var(vname, self.get_var(vname, 0) + 1)
+                elif "--" in inc_part:
+                    vname = inc_part.replace("--", "").strip()
+                    self.set_var(vname, self.get_var(vname, 0) - 1)
+                elif "+=" in inc_part:
+                    vname, step_str = inc_part.split("+=", 1)
+                    vname = vname.strip()
+                    self.variables[vname] = self.get_var(vname, 0) + int(self.eval_expression(step_str))
+
+            it_count += 1
 
     def execute_statement(self, stmt, steps):
         s = " ".join(stmt.split()).strip()
         if not s or s.startswith("cout") or s.startswith("return"):
             return
 
-        # 0. std::to_array
-        to_array_m = re.search(r"(?:(?:auto|(?:std\s*::\s*)?array\s*(?:<[^>]+>)?)\s+)?([a-zA-Z_]\w*)\s*=\s*(?:std\s*::\s*)?to_array\s*(?:<[^>]+>)?\s*\(\s*\{([^}]*)\}\s*\)", s)
-        if to_array_m:
-            name = to_array_m.group(1).strip()
-            raw_vals = to_array_m.group(2).strip()
-            self.main_array_name = name
-
-            init_vals = []
-            if raw_vals:
-                init_vals = [int(self.eval_expression(x)) for x in raw_vals.split(',') if x.strip()]
-
-            sz = len(init_vals)
-            self.arrays[name] = list(init_vals)
-            self.set_var("N", sz, is_decl=True)
-            self.set_var("n", sz, is_decl=True)
-            self.current_capacity = sz
-            self.current_size = sz
-            steps.append((
-                list(self.arrays[name]), 
-                f"Оголошено std::array (через std::to_array): {name}[{sz}] = {{{', '.join(map(str, init_vals))}}}", 
-                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, 
-                self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-            ))
-            return
+        self.current_stmt = s
 
         # Standalone inc/dec or compound ops (j--, j++, ++j, --j, j -= 1, j += 1)
         inc_dec_m = re.match(r"^(\+\+|--)?([a-zA-Z_]\w*)(\+\+|--)?$", s)
@@ -1165,9 +1493,30 @@ class CppUniversalEngine:
                 self.set_var(vname, curr - val_add)
             return
 
+        # 0. std::to_array
+        to_arr_m = re.search(r"(?:(?:auto|std\s*::\s*array(?:<[^>]+>)?)\s+)?([a-zA-Z_]\w*)\s*=\s*(?:std\s*::\s*)?to_array(?:<[^>]+>)?\s*\(\s*\{([^}]*)\}\s*\)", s)
+        if to_arr_m:
+            name = to_arr_m.group(1)
+            raw_vals = to_arr_m.group(2).strip()
+            init_vals = [int(self.eval_expression(x)) for x in raw_vals.split(',') if x.strip()] if raw_vals else []
+            sz = len(init_vals) or 5
+            self.arrays[name] = list(init_vals)
+            self.main_array_name = name
+            self.set_var("N", sz, is_decl=True)
+            self.set_var("n", sz, is_decl=True)
+            self.current_capacity = sz
+            self.current_size = sz
+            steps.append((
+                list(self.arrays[name]), 
+                f"Оголошено std::array (через std::to_array): {name}[{sz}] = {{{', '.join(map(str, init_vals))}}}", 
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+            ))
+            return
+
         # Змінні: int temp = a[j], int i = 0, low, high, mid, target
         var_assign_m = re.match(r"^(?:(?:int|double|float|auto|bool|size_t)\s+)?([a-zA-Z_]\w*)\s*=\s*(.+)$", s)
-        if var_assign_m:
+        if var_assign_m and var_assign_m.group(1) not in self.arrays:
             vname = var_assign_m.group(1)
             rhs = var_assign_m.group(2)
             val_eval = self.eval_expression(rhs)
@@ -1239,19 +1588,29 @@ class CppUniversalEngine:
                 ))
                 return
 
-            if "found" in vname.lower():
-                val_i = int(val_eval)
-                if val_i >= 0:
-                    self.found_index = val_i
+            if "cap" in vname.lower():
+                self.current_capacity = int(val_eval)
                 steps.append((
                     curr_arr, 
-                    f"Прапорчик пошуку: {vname} = {val_i}", 
+                    f"Визначено місткість (Capacity): {vname} = {val_eval}", 
                     self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                    self.has_capacity_size, self.current_capacity, self.current_size, None, self.found_index, None, None
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
                 return
 
-            return  # Return here for all other scalar variables!
+            if "count" in vname.lower() or "size" in vname.lower():
+                self.condition_count = int(val_eval)
+                self.current_size = int(val_eval)
+                return
+
+            if "found" in vname.lower() or "idx" in vname.lower() or "index" in vname.lower():
+                if int(val_eval) >= 0:
+                    self.found_index = int(val_eval)
+                else:
+                    self.found_index = None
+                return
+
+            return
 
         # 1. std::binary_search
         bin_search_call = re.match(r"(?:bool\s+\w+\s*=)?\s*(?:std::)?binary_search\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", s)
@@ -1300,24 +1659,24 @@ class CppUniversalEngine:
                 if not found:
                     steps.append((
                         list(arr), 
-                        f"std::binary_search: елемент {target_val} НЕ знайдено у масиві", 
+                        f"std::binary_search: елемент {target_val} НЕ знайдено", 
                         self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
                         self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                     ))
                 return
 
         # 2. std::find
-        find_call = re.match(r"(?:auto\s+(\w+)\s*=)?\s*(?:std::)?find\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", s)
+        find_call = re.match(r"(?:auto\s+\w+\s*=)?\s*(?:std::)?find\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", s)
         if find_call:
-            it1 = self.resolve_iterator_expr(find_call.group(2))
+            it1 = self.resolve_iterator_expr(find_call.group(1))
             cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
-            target_val = int(self.eval_expression(find_call.group(4)))
+            target_val = int(self.eval_expression(find_call.group(3)))
 
             if cname in self.arrays:
                 arr = self.arrays[cname]
                 steps.append((
                     list(arr), 
-                    f"Запуск std::find({cname}): пошук значення {target_val} зліва направо", 
+                    f"Запуск std::find({cname}, target={target_val})", 
                     self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
                     self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
@@ -1354,12 +1713,9 @@ class CppUniversalEngine:
         sort_call = re.match(r"(?:std\s*::\s*)?(?:ranges\s*::\s*)?(?:stable_)?sort\s*\(([^)]+)\)", s)
         if sort_call:
             args = [a.strip() for a in sort_call.group(1).split(',')]
+            it1 = self.resolve_iterator_expr(args[0]) if len(args) > 0 else None
+            cname = it1.container_name if isinstance(it1, CppIterator) else (args[0] if args[0] in self.arrays else self.main_array_name)
             descending = any("greater" in a for a in args)
-            if args[0] in self.arrays:
-                cname = args[0]
-            else:
-                it1 = self.resolve_iterator_expr(args[0])
-                cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
 
             if cname in self.arrays:
                 arr = self.arrays[cname]
@@ -1446,10 +1802,12 @@ class CppUniversalEngine:
                 else:
                     self.arrays[res_arr_name].append(val_to_add)
             
+            self.main_array_name = res_arr_name
             self.set_var(cnt_var_name, curr_cnt + 1)
             self.current_size = curr_cnt + 1
 
-            trimmed = list(self.arrays[res_arr_name][:self.current_size])
+            self.arrays[res_arr_name] = self.arrays[res_arr_name][:self.current_size]
+            trimmed = list(self.arrays[res_arr_name])
 
             steps.append((
                 trimmed, 
@@ -1475,7 +1833,7 @@ class CppUniversalEngine:
                 arr = self.arrays.get(cname, [])
                 left = it1.index if isinstance(it1, CppIterator) else 0
                 right = (it2.index - 1) if isinstance(it2, CppIterator) else (len(arr) - 1)
-            
+                
             steps.append((
                 list(arr), 
                 f"Запуск reverse({cname}): симетричний розворот від [{left}] до [{right}]", 
@@ -1759,137 +2117,6 @@ class CppUniversalEngine:
                 target_name = aname
                 break
 
-        # 19. Змінні: low, high, mid, target, temp, maxVal
-        if not target_name or target_name not in self.arrays:
-            if "=" in s:
-                lhs, rhs = s.split("=", 1)
-                is_decl_flag = bool(re.search(r"\b(?:int|auto|double|float|bool)\b", lhs))
-                vname = lhs.replace("*", "").split()[-1].strip()
-
-                # Двійковий пошук: розрахунок mid
-                if vname.lower() == "mid":
-                    val_eval = int(self.eval_expression(rhs))
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    self.binary_mid = val_eval
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-                    low_val = self.get_var("low", 0)
-                    high_val = self.get_var("high", len(curr_arr) - 1)
-                    self.binary_range = [low_val, high_val]
-                    steps.append((
-                        curr_arr, 
-                        f"Двійковий пошук: обчислення mid = {val_eval} (значення {curr_arr[val_eval] if 0 <= val_eval < len(curr_arr) else '?'})", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, self.binary_range, self.binary_mid
-                    ))
-                    return
-
-                # Двійковий пошук: зміна low або high
-                if vname.lower() in ("low", "high"):
-                    val_eval = int(self.eval_expression(rhs))
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-                    low_val = self.get_var("low", 0)
-                    high_val = self.get_var("high", len(curr_arr) - 1)
-                    self.binary_range = [low_val, high_val]
-                    steps.append((
-                        curr_arr, 
-                        f"Двійковий пошук: оновлено межу {vname} = {val_eval}. Новий діапазон: [{low_val}...{high_val}]", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, self.binary_range, None
-                    ))
-                    return
-
-                if "target" in vname.lower() or "key" in vname.lower():
-                    val_eval = int(self.eval_expression(rhs))
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    self.search_target = val_eval
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-                    steps.append((
-                        curr_arr, 
-                        f"Шукане значення для пошуку: {vname} = {val_eval}", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                    ))
-                    return
-
-                if "cap" in vname.lower():
-                    val_eval = int(self.eval_expression(rhs))
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    self.current_capacity = val_eval
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-                    steps.append((
-                        curr_arr, 
-                        f"Визначено місткість (Capacity): {vname} = {val_eval}", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                    ))
-                    return
-
-                if "temp" in vname.lower():
-                    val_eval = self.eval_expression(rhs)
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    self.temp_val = int(val_eval)
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-                    
-                    is_shift_start = bool(re.search(r"\[\s*0\s*\]|\.at\s*\(\s*0\s*\)", rhs))
-                    if is_shift_start:
-                        steps.append((
-                            curr_arr, 
-                            f"Циклічний зсув ліворуч: збереження {self.main_array_name}[0] у temp = {self.temp_val}", 
-                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, [0],
-                            self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                        ))
-                        return
-
-                    idx_match = re.search(r"\[([^\]]+)\]", rhs) or re.search(r"\.at\s*\(([^)]+)\)", rhs)
-                    if idx_match:
-                        first_i = int(self.eval_expression(idx_match.group(1)))
-                        sym_i = len(curr_arr) - 1 - first_i
-                        if 0 <= first_i < len(curr_arr) and 0 <= sym_i < len(curr_arr) and first_i != sym_i:
-                            self.active_pair = [min(first_i, sym_i), max(first_i, sym_i)]
-                            steps.append((
-                                curr_arr, 
-                                f"Реверс: Симетрична пара [{self.active_pair[0]}] та [{self.active_pair[1]}]. Збережено temp = {self.temp_val}", 
-                                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                                self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                            ))
-                            return
-
-                    steps.append((
-                        curr_arr, 
-                        f"Обмін / Сортування: збережено temp = {self.temp_val}", 
-                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                    ))
-                    return
-
-                it_try = self.resolve_iterator_expr(rhs)
-                if it_try:
-                    self.iterators[vname] = it_try
-                else:
-                    val_eval = self.eval_expression(rhs)
-                    self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    curr_arr = list(self.arrays.get(self.main_array_name, []))
-
-                    if "max" in vname.lower():
-                        self.current_max_val = int(val_eval)
-                        self.max_indices = [idx for idx, x in enumerate(curr_arr) if x == self.current_max_val]
-                        steps.append((
-                            curr_arr, 
-                            f"Ініціалізація максимуму: {vname} = {self.current_max_val}", 
-                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                            self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                        ))
-                    elif "count" in vname.lower() or "matched" in vname.lower() or "size" in vname.lower():
-                        self.condition_count = int(val_eval)
-                        self.current_size = int(val_eval)
-                        steps.append((curr_arr, f"Кількість елементів: {vname} = {self.current_size}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
-                    elif "sum" in vname.lower():
-                        steps.append((curr_arr, f"Обчислено суму: {vname} = {val_eval}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
-                    elif "avg" in vname.lower() or "mean" in vname.lower():
-                        steps.append((curr_arr, f"Середнє арифметичне: {vname} = {val_eval:.2f}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
-            return
-
         arr = self.arrays[target_name]
 
         if f"{target_name}.back()" in s and "=" in s and arr:
@@ -1967,7 +2194,7 @@ class CppUniversalEngine:
                     pair = [idx, min(idx + 1, len(arr) - 1)]
                     steps.append((
                         list(arr), 
-                        f"Зсув елемента праворуч: {target_name}[{idx}] = {val}" if "j" in lhs else f"Зсув елемента: {target_name}[{idx}] = {val}", 
+                        f"Зсув ліворуч: {target_name}[{idx}] = {target_name}[{idx+1}] ({val})", 
                         self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, pair,
                         self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                     ))
@@ -2005,9 +2232,7 @@ class CppUniversalEngine:
                 ))
             return
 
-
 class CodeVisualizer(QWidget):
-    """Головний двопанельний віджет візуалізатора з прив'язкою затримки анімацій до швидкості відтворення."""
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Покрокова візуалізація масивів C++")
@@ -2075,8 +2300,6 @@ class CodeVisualizer(QWidget):
         if not self.steps_queue:
             return
 
-        # Запуск із базовим інтервалом 400 мс та відповідним калібруванням анімації
-        self.anim_widget.set_animation_speed(400)
         self.timer.start(400)
 
     def process_next_step(self):
