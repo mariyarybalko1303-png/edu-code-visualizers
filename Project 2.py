@@ -205,7 +205,8 @@ class AdaptiveAnimationWidget(QWidget):
             if new_values:
                 curr_sum = sum(new_values)
                 curr_avg = curr_sum / len(new_values)
-                metrics_parts.append(f"Сума: {curr_sum} | Сер: {curr_avg:.2f}")
+                sum_str = f"{curr_sum:.2f}".rstrip('0').rstrip('.') if isinstance(curr_sum, float) else f"{curr_sum}"
+                metrics_parts.append(f"Сума: {sum_str} | Сер: {curr_avg:.2f}")
             else:
                 metrics_parts.append("Сума: 0 | Сер: 0.00")
 
@@ -359,6 +360,7 @@ class CppUniversalEngine:
         self.main_array_name = "arr"
         self.random_min = 1
         self.random_max = 100
+        self.is_real_dist = False
         self.has_sum_avg = False
         self.has_count = False
         self.has_max_search = False
@@ -378,6 +380,32 @@ class CppUniversalEngine:
         self.binary_range = None
         self.binary_mid = None
         self.last_eval_error = None
+
+    def parse_num(self, val):
+        if isinstance(val, (set, list, tuple)):
+            if len(val) > 0:
+                val = list(val)[0]
+            else:
+                return 0
+        if isinstance(val, float):
+            return int(val) if val.is_integer() else round(val, 4)
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str):
+            val_clean = val.strip().strip({}).strip()
+            try:
+                f = float(val_clean)
+                return int(f) if f.is_integer() else round(f, 4)
+            except ValueError:
+                pass
+        return val
+
+    def eval_int(self, expr_str):
+        val = self.parse_num(self.eval_expression(expr_str))
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return 0
 
     @property
     def variables(self):
@@ -529,8 +557,11 @@ class CppUniversalEngine:
         if not expr:
             return 0
 
-        # C++ цілочисельне ділення / N -> // N
-        expr = re.sub(r"/\s*(\d+)", r"// \1", expr)
+        has_float = "double" in expr or "float" in expr or "." in expr or getattr(self, "is_real_dist", False)
+
+        # C++ цілочисельне ділення / N -> // N лише якщо немає дійсних чисел або явного приведення до float/double
+        if not has_float:
+            expr = re.sub(r"/\s*(\d+)", r"// \1", expr)
 
         self.last_eval_error = None
 
@@ -630,14 +661,18 @@ class CppUniversalEngine:
             expr = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), expr)
 
         expr = re.sub(r"\(\s*(?:double|float|int)\s*\)", "", expr)
-        expr = re.sub(r"static_cast\s*<\s*(?:double|float|int)\s*>\s*\(([^)]+)\)", r"(\1)", expr)
+        expr = re.sub(r"static_cast\s*<\s*(?:double|float)\s*>\s*\(([^)]+)\)", r"float(\1)", expr)
+        expr = re.sub(r"static_cast\s*<\s*int\s*>\s*\(([^)]+)\)", r"int(\1)", expr)
 
         expr = re.sub(r"\brand\s*\(\s*\)", str(random.randint(0, 32767)), expr)
         expr = re.sub(r"\b\w*dist\w*\s*\(\s*\w*\s*\)", f"__random_val()", expr, flags=re.IGNORECASE)
 
         env = {
-            "__random_val": lambda: random.randint(self.random_min, self.random_max),
+            "__random_val": lambda: round(random.uniform(self.random_min, self.random_max), 2) if getattr(self, "is_real_dist", False) else random.randint(int(self.random_min), int(self.random_max)),
             "size_t": int,
+            "float": float,
+            "double": float,
+            "int": int,
             "nullptr": 0,
             "NULL": 0
         }
@@ -649,11 +684,11 @@ class CppUniversalEngine:
 
         try:
             res = eval(expr, {"__builtins__": {}}, env)
-            return float(res) if isinstance(res, float) else int(res)
+            return self.parse_num(res)
         except Exception as e:
             self.last_eval_error = f"Обчислення '{expr_str}': {e}"
             if "dist" in expr or "gen" in expr:
-                return random.randint(self.random_min, self.random_max)
+                return round(random.uniform(self.random_min, self.random_max), 2) if getattr(self, "is_real_dist", False) else random.randint(int(self.random_min), int(self.random_max))
             return 0
 
     def run(self, code_text):
@@ -662,6 +697,7 @@ class CppUniversalEngine:
         self.arrays.clear()
         self.main_array_name = "arr"
         self.random_min, self.random_max = 1, 100
+        self.is_real_dist = False
         self.condition_count = None
         self.max_indices = []
         self.current_max_val = None
@@ -680,10 +716,16 @@ class CppUniversalEngine:
         code = self.clean_code(code_text)
         self.detect_features(code)
 
-        dist_match = re.search(r"uniform_int_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", code)
-        if dist_match:
-            self.random_min = int(dist_match.group(1))
-            self.random_max = int(dist_match.group(2))
+        real_dist_match = re.search(r"uniform_real_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", code)
+        if real_dist_match:
+            self.is_real_dist = True
+            self.random_min = float(real_dist_match.group(1))
+            self.random_max = float(real_dist_match.group(2))
+        else:
+            dist_match = re.search(r"uniform_int_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)", code)
+            if dist_match:
+                self.random_min = int(dist_match.group(1))
+                self.random_max = int(dist_match.group(2))
 
         main_match = re.search(r"int\s+main\s*\([^)]*\)\s*\{(.*)\}", code, re.DOTALL)
         body = main_match.group(1) if main_match else code
@@ -1125,7 +1167,7 @@ class CppUniversalEngine:
 
             init_vals = []
             if raw_vals:
-                init_vals = [int(self.eval_expression(x)) for x in raw_vals.split(',') if x.strip()]
+                init_vals = [self.parse_num(self.eval_expression(x)) for x in raw_vals.split(',') if x.strip()]
 
             sz = len(init_vals)
             self.arrays[name] = list(init_vals)
@@ -1177,7 +1219,7 @@ class CppUniversalEngine:
             curr_arr = list(self.arrays.get(self.main_array_name, []))
 
             if "temp" in vname.lower():
-                self.temp_val = int(val_eval)
+                self.temp_val = self.parse_num(val_eval)
                 idx_m = re.search(r"\[([^\]]+)\]", rhs) or re.search(r"\.at\s*\(([^)]+)\)", rhs)
                 if idx_m:
                     first_i = int(self.eval_expression(idx_m.group(1)))
@@ -1227,7 +1269,7 @@ class CppUniversalEngine:
             if "target" in vname.lower() or "key" in vname.lower():
                 self.search_target = int(val_eval)
                 if "key" in vname.lower():
-                    self.temp_val = int(val_eval)
+                    self.temp_val = self.parse_num(val_eval)
                     msg_title = f"Ключ сортування вставками: {vname} = {val_eval}"
                 else:
                     msg_title = f"Шукане значення для пошуку: {vname} = {val_eval}"
@@ -1258,7 +1300,7 @@ class CppUniversalEngine:
         if bin_search_call:
             it1 = self.resolve_iterator_expr(bin_search_call.group(1))
             cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
-            target_val = int(self.eval_expression(bin_search_call.group(3)))
+            target_val = self.parse_num(self.eval_expression(bin_search_call.group(3)))
 
             if cname in self.arrays:
                 arr = self.arrays[cname]
@@ -1311,7 +1353,7 @@ class CppUniversalEngine:
         if find_call:
             it1 = self.resolve_iterator_expr(find_call.group(2))
             cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
-            target_val = int(self.eval_expression(find_call.group(4)))
+            target_val = self.parse_num(self.eval_expression(find_call.group(4)))
 
             if cname in self.arrays:
                 arr = self.arrays[cname]
@@ -1435,7 +1477,7 @@ class CppUniversalEngine:
         if filter_push:
             res_arr_name = filter_push.group(1)
             cnt_var_name = filter_push.group(2) or filter_push.group(3)
-            val_to_add = int(self.eval_expression(filter_push.group(4)))
+            val_to_add = self.parse_num(self.eval_expression(filter_push.group(4)))
 
             curr_cnt = self.get_var(cnt_var_name, 0)
             if res_arr_name not in self.arrays or not self.arrays[res_arr_name]:
@@ -1542,7 +1584,7 @@ class CppUniversalEngine:
         deref_assign = re.match(r"^\*\s*(\w+)\s*=\s*(.+)$", s)
         if deref_assign:
             it_name = deref_assign.group(1)
-            val = int(self.eval_expression(deref_assign.group(2)))
+            val = self.parse_num(self.eval_expression(deref_assign.group(2)))
             if it_name in self.iterators:
                 it_obj = self.iterators[it_name]
                 target_name = it_obj.container_name
@@ -1586,7 +1628,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [self.parse_num(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             self.arrays[name] = [0] * sz
             for idx, val in enumerate(init_vals[:sz]):
@@ -1619,7 +1661,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [self.parse_num(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             sz = int(self.eval_expression(raw_sz)) if raw_sz else (len(init_vals) if init_vals else 5)
             sz = min(max(sz, 0), 25)
@@ -1687,7 +1729,7 @@ class CppUniversalEngine:
             init_vals = []
             brace_m = re.search(r"\{([^}]*)\}", s)
             if brace_m and brace_m.group(1).strip():
-                init_vals = [int(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
+                init_vals = [self.parse_num(self.eval_expression(x)) for x in brace_m.group(1).split(',') if x.strip()]
 
             sz = int(self.eval_expression(raw_sz)) if raw_sz else (len(init_vals) if init_vals else 5)
             sz = min(max(sz, 0), 25)
@@ -1708,8 +1750,8 @@ class CppUniversalEngine:
             target_name = at_assign_m.group(1)
             raw_idx = at_assign_m.group(2)
             raw_val = at_assign_m.group(3)
-            idx = int(self.eval_expression(raw_idx))
-            val = int(self.eval_expression(raw_val))
+            idx = self.eval_int(raw_idx)
+            val = self.parse_num(self.eval_expression(raw_val))
 
             if target_name in self.arrays:
                 arr = self.arrays[target_name]
@@ -1743,7 +1785,7 @@ class CppUniversalEngine:
         if plus_eq_m:
             vname = plus_eq_m.group(1).strip()
             val_add = self.eval_expression(plus_eq_m.group(2))
-            self.set_var(vname, self.get_var(vname, 0) + val_add)
+            self.set_var(vname, self.parse_num(self.get_var(vname, 0) + val_add))
             curr_arr = list(self.arrays.get(self.main_array_name, []))
             if "sum" in vname.lower():
                 steps.append((curr_arr, f"Накопичення суми: {vname} = {self.get_var(vname)} (+{val_add})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
@@ -1768,7 +1810,7 @@ class CppUniversalEngine:
 
                 # Двійковий пошук: розрахунок mid
                 if vname.lower() == "mid":
-                    val_eval = int(self.eval_expression(rhs))
+                    val_eval = self.parse_num(self.eval_expression(rhs))
                     self.set_var(vname, val_eval, is_decl=is_decl_flag)
                     self.binary_mid = val_eval
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
@@ -1785,7 +1827,7 @@ class CppUniversalEngine:
 
                 # Двійковий пошук: зміна low або high
                 if vname.lower() in ("low", "high"):
-                    val_eval = int(self.eval_expression(rhs))
+                    val_eval = self.parse_num(self.eval_expression(rhs))
                     self.set_var(vname, val_eval, is_decl=is_decl_flag)
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
                     low_val = self.get_var("low", 0)
@@ -1800,7 +1842,7 @@ class CppUniversalEngine:
                     return
 
                 if "target" in vname.lower() or "key" in vname.lower():
-                    val_eval = int(self.eval_expression(rhs))
+                    val_eval = self.parse_num(self.eval_expression(rhs))
                     self.set_var(vname, val_eval, is_decl=is_decl_flag)
                     self.search_target = val_eval
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
@@ -1813,7 +1855,7 @@ class CppUniversalEngine:
                     return
 
                 if "cap" in vname.lower():
-                    val_eval = int(self.eval_expression(rhs))
+                    val_eval = self.parse_num(self.eval_expression(rhs))
                     self.set_var(vname, val_eval, is_decl=is_decl_flag)
                     self.current_capacity = val_eval
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
@@ -1828,7 +1870,7 @@ class CppUniversalEngine:
                 if "temp" in vname.lower():
                     val_eval = self.eval_expression(rhs)
                     self.set_var(vname, val_eval, is_decl=is_decl_flag)
-                    self.temp_val = int(val_eval)
+                    self.temp_val = self.parse_num(val_eval)
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
                     
                     is_shift_start = bool(re.search(r"\[\s*0\s*\]|\.at\s*\(\s*0\s*\)", rhs))
@@ -1872,7 +1914,7 @@ class CppUniversalEngine:
                     curr_arr = list(self.arrays.get(self.main_array_name, []))
 
                     if "max" in vname.lower():
-                        self.current_max_val = int(val_eval)
+                        self.current_max_val = self.parse_num(val_eval)
                         self.max_indices = [idx for idx, x in enumerate(curr_arr) if x == self.current_max_val]
                         steps.append((
                             curr_arr, 
@@ -1897,7 +1939,7 @@ class CppUniversalEngine:
 
         if ".fill" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
-            val = int(self.eval_expression(val_expr))
+            val = self.parse_num(self.eval_expression(val_expr))
             for i in range(len(arr)):
                 old = arr[i]
                 arr[i] = val
@@ -1915,7 +1957,7 @@ class CppUniversalEngine:
 
         if ".push_back" in s or ".emplace_back" in s:
             val_expr = s[s.find("(")+1:s.rfind(")")]
-            val = int(self.eval_expression(val_expr))
+            val = self.parse_num(self.eval_expression(val_expr))
             arr.append(val)
             self.current_size = len(arr)
             steps.append((list(arr), f"{target_name}.push_back({val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
@@ -1939,13 +1981,13 @@ class CppUniversalEngine:
             b_r = lhs.rfind("]")
             idx = 0
             if b_l != -1 and b_r != -1:
-                idx = int(self.eval_expression(lhs[b_l+1:b_r]))
+                idx = self.eval_int(lhs[b_l+1:b_r])
             elif ".at(" in lhs:
                 b_l = lhs.find(".at(")
                 b_r = lhs.find(")", b_l)
-                idx = int(self.eval_expression(lhs[b_l+4:b_r]))
+                idx = self.eval_int(lhs[b_l+4:b_r])
             
-            val = int(self.eval_expression(rhs))
+            val = self.parse_num(self.eval_expression(rhs))
 
             if 0 <= idx < len(arr):
                 old = arr[idx]
