@@ -184,7 +184,8 @@ class AdaptiveAnimationWidget(QWidget):
                          temp_val=None, pair_indices=None, show_capacity_size=False,
                          capacity_metric=None, size_metric=None, search_index=None, 
                          found_index=None, binary_range=None, binary_mid=None,
-                         pivot_index=None):
+                         pivot_index=None, current_min_val=None, min_indices=None,
+                         extra_vars=None, precision=2):
         self.clear_static_layer()
         self.finalize_running_animations()
         
@@ -221,17 +222,53 @@ class AdaptiveAnimationWidget(QWidget):
             if first_vals:
                 curr_sum = sum(first_vals)
                 curr_avg = curr_sum / len(first_vals)
-                sum_str = f"{curr_sum:.2f}".rstrip('0').rstrip('.') if isinstance(curr_sum, float) else f"{curr_sum}"
+                sum_str = f"{curr_sum:.{precision}f}".rstrip('0').rstrip('.') if isinstance(curr_sum, float) else f"{curr_sum}"
                 metrics_parts.append(f"Сума: {sum_str} | Сер: {curr_avg:.2f}")
             else:
                 metrics_parts.append("Сума: 0 | Сер: 0.00")
 
-        if count_metric is not None and not show_capacity_size:
+        # Conditional accumulation sums
+        if extra_vars:
+            cond_sums = []
+            for k, v in extra_vars.items():
+                k_lower = k.lower()
+                if "sum" in k_lower and k_lower not in ("sum", "curr_sum", "sum_val"):
+                    v_str = f"{v:.{precision}f}".rstrip('0').rstrip('.') if isinstance(v, float) else f"{v}"
+                    if "positive" in k_lower or "pos" in k_lower:
+                        label = f"Сума додатних ({k})"
+                    elif "negative" in k_lower or "neg" in k_lower:
+                        label = f"Сума від'ємних ({k})"
+                    elif "even" in k_lower:
+                        label = f"Сума парних ({k})"
+                    elif "odd" in k_lower:
+                        label = f"Сума непарних ({k})"
+                    else:
+                        label = k
+                    cond_sums.append(f"{label}: {v_str}")
+            if cond_sums:
+                metrics_parts.append(" | ".join(cond_sums))
+
+        # Counters / Лічильники
+        active_cnts = []
+        if extra_vars:
+            for k, v in extra_vars.items():
+                k_lower = k.lower()
+                if any(cw in k_lower for cw in ("count", "counter", "matched", "num_")) and k_lower not in ("count_metric", "capacity", "size"):
+                    active_cnts.append(f"{k}: {v}")
+        if active_cnts:
+            metrics_parts.append(" | ".join(active_cnts))
+        elif count_metric is not None and not show_capacity_size:
             metrics_parts.append(f"Кількість за умовою: {count_metric}")
+
+        if current_min_val is not None:
+            idxs_str = f" [індекси: {', '.join(map(str, min_indices))}]" if min_indices else ""
+            v_str = f"{current_min_val:.{precision}f}".rstrip('0').rstrip('.') if isinstance(current_min_val, float) else f"{current_min_val}"
+            metrics_parts.append(f"Мінімум (Min): {v_str}{idxs_str}")
 
         if current_max_val is not None:
             idxs_str = f" [індекси: {', '.join(map(str, max_indices))}]" if max_indices else ""
-            metrics_parts.append(f"Максимум (Max): {current_max_val}{idxs_str}")
+            v_str = f"{current_max_val:.{precision}f}".rstrip('0').rstrip('.') if isinstance(current_max_val, float) else f"{current_max_val}"
+            metrics_parts.append(f"Максимум (Max): {v_str}{idxs_str}")
 
         if found_index is not None:
             metrics_parts.append(f"Знайдено індекс: {found_index}")
@@ -401,6 +438,38 @@ class CppUniversalEngine:
         """Знімок усіх наявних масивів у системі для одночасного відображення у UI."""
         return {k: list(v) for k, v in self.arrays.items()}
 
+
+    def make_step(self, desc, pair=None, search_idx=None, found_idx=None, bin_range=None, bin_mid=None, pivot_idx=None):
+        extra_vars = {}
+        for k, v in self.variables.items():
+            k_lower = k.lower()
+            if any(kw in k_lower for kw in ("count", "counter", "matched", "num_", "sumpositive", "sumnegative", "sumeven", "sumodd", "sumpos", "sumneg")):
+                if k_lower not in ("i", "j", "n", "capacity", "size"):
+                    extra_vars[k] = v
+
+        return (
+            self.get_arrays_snapshot(),
+            str(desc),
+            self.has_sum_avg,
+            self.condition_count,
+            list(self.max_indices) if self.max_indices else None,
+            self.current_max_val,
+            self.temp_val,
+            pair,
+            self.has_capacity_size,
+            self.current_capacity,
+            self.current_size,
+            search_idx,
+            found_idx,
+            bin_range,
+            bin_mid,
+            pivot_idx,
+            self.current_min_val,
+            list(self.min_indices) if self.min_indices else None,
+            extra_vars,
+            getattr(self, "precision", 2)
+        )
+
     def run_quicksort_visualizer(self, cname, low, high, steps):
         if low >= high or low < 0 or high >= len(self.arrays[cname]):
             return
@@ -500,6 +569,10 @@ class CppUniversalEngine:
         self.search_target = None
         self.binary_range = None
         self.binary_mid = None
+        self.current_min_val = None
+        self.min_indices = []
+        self.precision = 2
+        self.fixed_format = False
         self.last_eval_error = None
 
     def parse_num(self, val):
@@ -564,6 +637,14 @@ class CppUniversalEngine:
             self.scopes[-1][name] = val
 
     def clean_code(self, source):
+        prec_m = re.search(r"(?:std\s*::\s*)?setprecision\s*\(\s*(\d+)\s*\)", source)
+        if prec_m:
+            self.precision = int(prec_m.group(1))
+            self.fixed_format = "fixed" in source.lower()
+        else:
+            self.precision = 2
+            self.fixed_format = False
+
         no_block_comments = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         no_line_comments = re.sub(r"//.*", "", no_block_comments)
         
@@ -585,7 +666,7 @@ class CppUniversalEngine:
 
         # Вилучення standalone операцій введення cin >> ... ;
         no_cin_stmts = re.sub(r"\b(?:std\s*::\s*)?cin\s*>>\s*[^;]+;", "", no_line_comments)
-        normalized = re.sub(r"\b(int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_cin_stmts)
+        normalized = re.sub(r"\b(long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_cin_stmts)
         normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
         normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
         normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
@@ -700,6 +781,18 @@ class CppUniversalEngine:
                 self.current_max_val = m_val
                 self.max_indices = [idx for idx, x in enumerate(arr) if x == m_val]
                 expr = expr.replace(max_el_m.group(0), str(m_val))
+
+        # std::min_element
+        min_el_m = re.search(r"(?:std::)?min_element\s*\(([^,]+),\s*([^)]+)\)", expr)
+        if min_el_m:
+            it1 = self.resolve_iterator_expr(min_el_m.group(1))
+            cname = it1.container_name if isinstance(it1, CppIterator) else self.main_array_name
+            if cname in self.arrays and self.arrays[cname]:
+                arr = self.arrays[cname]
+                m_val = min(arr)
+                self.current_min_val = m_val
+                self.min_indices = [idx for idx, x in enumerate(arr) if x == m_val]
+                expr = expr.replace(min_el_m.group(0), str(m_val))
 
         # std::count_if та std::count
         count_if_m = re.search(r"(?:std::)?count_if\s*\(([^,]+),\s*([^,]+),\s*\[[^\]]*\]\s*\([^\)]*\)\s*\{?\s*return\s*([^;}]+);?\s*\}?\s*\)", expr)
@@ -834,6 +927,10 @@ class CppUniversalEngine:
         self.search_target = None
         self.binary_range = None
         self.binary_mid = None
+        self.current_min_val = None
+        self.min_indices = []
+        self.precision = 2
+        self.fixed_format = False
         self.last_eval_error = None
         steps = []
 
@@ -1075,9 +1172,10 @@ class CppUniversalEngine:
         is_binary_match = bool(re.search(r"mid", cond_expr.lower()) and "==" in cond_expr)
         is_binary_less_or_more = bool(re.search(r"mid", cond_expr.lower()) and ("<" in cond_expr or ">" in cond_expr))
         is_search_cond = bool(re.search(r"==\s*target|target\s*==|==\s*key|key\s*==", cond_expr) and ("[" in cond_expr or ".at" in cond_expr)) and not is_binary_match
-        is_sort_cond = bool(re.search(r"\[[^\]]+\]\s*>\s*[^[]*\[[^\]]+\]|\.at\([^)]+\)\s*>\s*[^.]*\.at\([^)]+\)", cond_expr))
-        is_max_cond = bool(re.search(r">\s*max|max\s*<", cond_expr.lower()))
-        is_filter_cond = bool(re.search(r">\s*0|<\s*0|%\s*2\s*==|!=\s*0|count\s*<|size\s*<|capacity", cond_expr.lower()))
+        is_min_cond = bool(re.search(r"<\s*a\[indexmin\]|<\s*a\[min\]|<\s*min|min\s*>", cond_expr.lower()))
+        is_max_cond = bool(re.search(r">\s*a\[indexmax\]|>\s*a\[max\]|>\s*max|max\s*<", cond_expr.lower()))
+        is_sort_cond = bool(re.search(r"\[[^\]]+\]\s*>\s*[^[]*\[[^\]]+\]|\.at\([^)]+\)\s*>\s*[^.]*\.at\([^)]+\)", cond_expr)) and not is_min_cond and not is_max_cond
+        is_filter_cond = bool(re.search(r">\s*0|<\s*0|%\s*2\s*==|!=\s*0|count\s*<|size\s*<|capacity", cond_expr.lower())) and not is_min_cond and not is_max_cond and not is_sort_cond
 
         curr_i = None
         idx_search_match = re.search(r"\[\s*(\w+)\s*\]|\.at\s*\(\s*(\w+)\s*\)", cond_expr)
@@ -1130,18 +1228,32 @@ class CppUniversalEngine:
             if "low" in self.variables and "high" in self.variables:
                 self.binary_range = [self.get_var("low"), self.get_var("high")]
 
-            if is_max_cond:
+            if is_min_cond:
+                for k in self.variables:
+                    if "min" in k.lower() and "max" not in k.lower() and "mid" not in k.lower():
+                        val = self.get_var(k)
+                        if "index" in k.lower() or "idx" in k.lower():
+                            if 0 <= val < len(curr_arr):
+                                self.current_min_val = curr_arr[val]
+                                self.min_indices = [i for i, x in enumerate(curr_arr) if x == self.current_min_val]
+                        else:
+                            self.current_min_val = val
+                            self.min_indices = [i for i, x in enumerate(curr_arr) if x == self.current_min_val]
+                        break
+                steps.append(self.make_step(f"Знайдено новий мінімум: {self.current_min_val} [індекс(и): {', '.join(map(str, self.min_indices))}]"))
+            elif is_max_cond:
                 for k in self.variables:
                     if "max" in k.lower():
-                        self.current_max_val = self.get_var(k)
+                        val = self.get_var(k)
+                        if "index" in k.lower() or "idx" in k.lower():
+                            if 0 <= val < len(curr_arr):
+                                self.current_max_val = curr_arr[val]
+                                self.max_indices = [i for i, x in enumerate(curr_arr) if x == self.current_max_val]
+                        else:
+                            self.current_max_val = val
+                            self.max_indices = [i for i, x in enumerate(curr_arr) if x == self.current_max_val]
                         break
-                if self.current_max_val is not None:
-                    self.max_indices = [idx for idx, val in enumerate(curr_arr) if val == self.current_max_val]
-                steps.append((self.get_arrays_snapshot(), 
-                    f"Знайдено новий максимум: {self.current_max_val} [індекс(и): {', '.join(map(str, self.max_indices))}]", 
-                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
-                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
-                ))
+                steps.append(self.make_step(f"Знайдено новий максимум: {self.current_max_val} [індекс(и): {', '.join(map(str, self.max_indices))}]"))
             elif is_filter_cond:
                 cnt_val = self.get_var("count", self.get_var("size", self.condition_count))
                 self.current_size = cnt_val
@@ -1172,8 +1284,10 @@ class CppUniversalEngine:
                     self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                 ))
                 self.active_pair = None
+            elif is_min_cond:
+                steps.append(self.make_step(f"Порівняння: ({cond_expr}) -> Ні (поточний мінімум: {self.current_min_val})"))
             elif is_max_cond:
-                steps.append((self.get_arrays_snapshot(), f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
+                steps.append(self.make_step(f"Порівняння: ({cond_expr}) -> Ні (поточний максимум: {self.current_max_val})"))
             elif is_filter_cond:
                 cnt_val = self.get_var("count", self.get_var("size", self.condition_count))
                 steps.append((self.get_arrays_snapshot(), 
@@ -1277,6 +1391,11 @@ class CppUniversalEngine:
         if re.search(r"\b(?:std\s*::\s*)?cin\s*>>", s):
             return
 
+        for cname in list(self.arrays.keys()):
+            s = re.sub(rf"\b{cname}\.front\s*\(\s*\)", f"{cname}[0]", s)
+            if self.arrays[cname]:
+                s = re.sub(rf"\b{cname}\.back\s*\(\s*\)", f"{cname}[{len(self.arrays[cname])-1}]", s)
+
         # 0. std::to_array
         to_array_m = re.search(r"(?:(?:auto|(?:std\s*::\s*)?array\s*(?:<[^>]+>)?)\s+)?([a-zA-Z_]\w*)\s*=\s*(?:std\s*::\s*)?to_array\s*(?:<[^>]+>)?\s*\(\s*\{([^}]*)\}\s*\)", s)
         if to_array_m:
@@ -1307,10 +1426,11 @@ class CppUniversalEngine:
             vname = inc_dec_m.group(2)
             op = inc_dec_m.group(1) or inc_dec_m.group(3)
             curr = self.get_var(vname, 0)
-            if op == "++":
-                self.set_var(vname, curr + 1)
-            elif op == "--":
-                self.set_var(vname, curr - 1)
+            new_val = curr + 1 if op == "++" else curr - 1
+            self.set_var(vname, new_val)
+            if any(kw in vname.lower() for kw in ("count", "counter", "matched", "num_")):
+                self.condition_count = new_val
+                steps.append(self.make_step(f"Лічильник ({vname}): {vname} = {new_val} ({'+1' if op == '++' else '-1'})"))
             return
 
         plus_minus_m = re.match(r"^([a-zA-Z_]\w*)\s*(\+=|-=)\s*(.+)$", s)
@@ -1325,14 +1445,15 @@ class CppUniversalEngine:
                 self.set_var(vname, curr - val_add)
             return
 
-        # Змінні: int temp = a[j], int i = 0, low, high, mid, target
-        var_assign_m = re.match(r"^(?:(?:constexpr|const|int|double|float|auto|bool|size_t|std\s*::\s*array<[^>]+>)\s+)*([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)([^{}]*)\s*\}?$", s)
-        if var_assign_m:
+        # Змінні: int temp = a[j], long long sumPositive{}, int i = 0, low, high, mid, target
+        var_assign_m = re.match(r"^(?:(?:constexpr|const|long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+)*([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)([^{}]*)\s*\}?;?$", s)
+        if var_assign_m and "array" not in s and "vector" not in s and "[" not in s:
             vname = var_assign_m.group(1)
             rhs = var_assign_m.group(2).strip()
             if rhs in self.arrays:
                 self.arrays[vname] = list(self.arrays[rhs])
                 self.main_array_name = vname
+                self.current_size = len(self.arrays[vname])
                 steps.append((self.get_arrays_snapshot(), f"Створено масив / копію: {vname} = {rhs}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
                 return
             val_eval = self.parse_num(self.eval_expression(rhs))
@@ -1935,18 +2056,31 @@ class CppUniversalEngine:
                 return
 
         # 18. Сума +=
-        plus_eq_m = re.match(r"^(\w+)\s*\+=\s*(.+)$", s)
+        plus_eq_m = re.match(r"^(\w+)\s*(\+=|-=)\s*(.+)$", s)
         if plus_eq_m:
             vname = plus_eq_m.group(1).strip()
-            val_add = self.eval_expression(plus_eq_m.group(2))
-            self.set_var(vname, self.parse_num(self.get_var(vname, 0) + val_add))
-            curr_arr = list(self.arrays.get(self.main_array_name, []))
-            if "sum" in vname.lower():
-                steps.append((self.get_arrays_snapshot(), f"Накопичення суми: {vname} = {self.get_var(vname)} (+{val_add})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
-            elif "count" in vname.lower() or "size" in vname.lower():
-                self.condition_count = self.get_var(vname)
-                self.current_size = self.get_var(vname)
-                steps.append((self.get_arrays_snapshot(), f"Кількість: {vname} = {self.current_size}", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
+            op = plus_eq_m.group(2)
+            val_add = self.eval_expression(plus_eq_m.group(3))
+            curr = self.get_var(vname, 0)
+            new_val = self.parse_num(curr + val_add if op == "+=" else curr - val_add)
+            self.set_var(vname, new_val)
+            v_lower = vname.lower()
+            if "sum" in v_lower:
+                if "positive" in v_lower or "pos" in v_lower:
+                    msg = f"Умовне накопичення (додатні): {vname} = {new_val} (+{val_add})"
+                elif "negative" in v_lower or "neg" in v_lower:
+                    msg = f"Умовне накопичення (від'ємні): {vname} = {new_val} ({val_add})"
+                elif "even" in v_lower:
+                    msg = f"Умовне накопичення (парні): {vname} = {new_val} (+{val_add})"
+                elif "odd" in v_lower:
+                    msg = f"Умовне накопичення (непарні): {vname} = {new_val} (+{val_add})"
+                else:
+                    msg = f"Накопичення суми: {vname} = {new_val} ({'+' if val_add >= 0 else ''}{val_add})"
+                steps.append(self.make_step(msg))
+            elif "count" in v_lower or "size" in v_lower:
+                self.condition_count = new_val
+                self.current_size = new_val
+                steps.append(self.make_step(f"Лічильник / Кількість: {vname} = {new_val}"))
             return
 
         target_name = self.main_array_name
@@ -2286,6 +2420,10 @@ class CodeVisualizer(QWidget):
             bin_range = step_data[13] if len(step_data) > 13 else None
             bin_mid = step_data[14] if len(step_data) > 14 else None
             pivot_idx = step_data[15] if len(step_data) > 15 else None
+            min_val = step_data[16] if len(step_data) > 16 else None
+            min_indices = step_data[17] if len(step_data) > 17 else None
+            extra_vars = step_data[18] if len(step_data) > 18 else None
+            precision = step_data[19] if len(step_data) > 19 else 2
 
             self.anim_widget.update_variables(
                 arr_state, 
@@ -2303,7 +2441,11 @@ class CodeVisualizer(QWidget):
                 found_index=found_idx,
                 binary_range=bin_range,
                 binary_mid=bin_mid,
-                pivot_index=pivot_idx
+                pivot_index=pivot_idx,
+                current_min_val=min_val,
+                min_indices=min_indices,
+                extra_vars=extra_vars,
+                precision=precision
             )
             self.current_step += 1
         else:
