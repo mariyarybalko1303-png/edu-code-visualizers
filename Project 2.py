@@ -181,7 +181,8 @@ class AdaptiveAnimationWidget(QWidget):
                          count_metric=None, max_indices=None, current_max_val=None, 
                          temp_val=None, pair_indices=None, show_capacity_size=False,
                          capacity_metric=None, size_metric=None, search_index=None, 
-                         found_index=None, binary_range=None, binary_mid=None):
+                         found_index=None, binary_range=None, binary_mid=None,
+                         pivot_index=None):
         self.clear_static_layer()
         self.finalize_running_animations()
         
@@ -216,6 +217,9 @@ class AdaptiveAnimationWidget(QWidget):
         if current_max_val is not None:
             idxs_str = f" [індекси: {', '.join(map(str, max_indices))}]" if max_indices else ""
             metrics_parts.append(f"Максимум (Max): {current_max_val}{idxs_str}")
+
+        if pivot_index is not None and 0 <= pivot_index < len(new_values):
+            metrics_parts.append(f"Pivot (Опорний): [{pivot_index}] = {new_values[pivot_index]}")
 
         if found_index is not None:
             metrics_parts.append(f"Знайдено індекс: {found_index}")
@@ -279,7 +283,9 @@ class AdaptiveAnimationWidget(QWidget):
             new_val = new_values[i]
 
             # Визначення кольору підсвічування
-            if found_index is not None and i == found_index:
+            if pivot_index is not None and i == pivot_index:
+                target_color = "#e74c3c"  # Опорний елемент Pivot (червоний/кораловий)
+            elif found_index is not None and i == found_index:
                 target_color = "#2ecc71"  # Знайдений елемент (зелений)
             elif binary_mid is not None and i == binary_mid:
                 target_color = "#e67e22"  # Центральний елемент mid (помаранчевий)
@@ -346,6 +352,72 @@ class CppIterator:
 
 
 class CppUniversalEngine:
+    def run_quicksort_visualizer(self, cname, low, high, steps):
+        if low >= high or low < 0 or high >= len(self.arrays[cname]):
+            return
+
+        arr = self.arrays[cname]
+        pivot_idx = high
+        pivot_val = arr[pivot_idx]
+
+        steps.append((
+            list(arr),
+            f"QuickSort: Обрано опорний елемент (pivot) = {cname}[{pivot_idx}] ({pivot_val}) для діапазону [{low}...{high}]",
+            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, None,
+            self.has_capacity_size, self.current_capacity, self.current_size, None, None, [low, high], None, pivot_idx
+        ))
+
+        i = low - 1
+        for j in range(low, high):
+            self.active_pair = [j, pivot_idx]
+            steps.append((
+                list(arr),
+                f"QuickSort: Порівняння {cname}[{j}] ({arr[j]}) з pivot ({pivot_val})",
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                self.has_capacity_size, self.current_capacity, self.current_size, None, None, [low, high], None, pivot_idx
+            ))
+
+            if arr[j] <= pivot_val:
+                i += 1
+                if i != j:
+                    self.active_pair = [i, j]
+                    self.temp_val = arr[i]
+                    arr[i] = arr[j]
+                    arr[j] = self.temp_val
+                    steps.append((
+                        list(arr),
+                        f"QuickSort: {cname}[{j}] <= pivot ({pivot_val}). Обмін {cname}[{i}] <-> {cname}[{j}]",
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, [low, high], None, pivot_idx
+                    ))
+
+        pi = i + 1
+        if pi != high:
+            self.active_pair = [pi, high]
+            self.temp_val = arr[pi]
+            arr[pi] = arr[high]
+            arr[high] = self.temp_val
+            steps.append((
+                list(arr),
+                f"QuickSort: Встановлення pivot ({pivot_val}) на фінальну позицію [{pi}]",
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                self.has_capacity_size, self.current_capacity, self.current_size, None, None, [low, high], None, pi
+            ))
+        else:
+            steps.append((
+                list(arr),
+                f"QuickSort: Pivot ({pivot_val}) вже на правильній позиції [{pi}]",
+                self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, None,
+                self.has_capacity_size, self.current_capacity, self.current_size, None, None, [low, high], None, pi
+            ))
+
+        self.temp_val = None
+        self.active_pair = None
+
+        self.run_quicksort_visualizer(cname, low, pi - 1, steps)
+        self.run_quicksort_visualizer(cname, pi + 1, high, steps)
+
+
     """
     Універсальний симулятор та інтерпретатор коду C++20:
     - Стек областей видимості (Scope Stack) для коректної обробки вкладених блоків та змінних
@@ -462,7 +534,9 @@ class CppUniversalEngine:
                     out.append(p)
             return "; ".join(out) + ";"
 
-        normalized = re.sub(r"\b(int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_line_comments)
+        # Вилучення standalone операцій введення cin >> ... ;
+        no_cin_stmts = re.sub(r"\b(?:std\s*::\s*)?cin\s*>>\s*[^;]+;", "", no_line_comments)
+        normalized = re.sub(r"\b(int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_cin_stmts)
         normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
         normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
         normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
@@ -483,6 +557,7 @@ class CppUniversalEngine:
         self.has_capacity_size = bool(re.search(r"\b(capacity|cap|actual_size)\b", code_lower))
         self.has_binary_search = bool(re.search(r"\b(binary_search|binarysearch|mid|low|high)\b", code_lower))
         self.has_linear_search = bool(re.search(r"\b(find|search|target|key)\b|==\s*target|target\s*==", code_lower)) and not self.has_binary_search
+        self.has_quicksort = bool(re.search(r"\b(quick_sort|quicksort|partition|pivot)\b", code_lower))
 
     def resolve_iterator_expr(self, expr_str):
         expr = expr_str.strip()
@@ -732,7 +807,7 @@ class CppUniversalEngine:
 
         # Автоматичне створення тестового масиву, якщо немає явного оголошення
         has_decl = bool(re.search(r"(?:int|auto|vector|array)\s+\w+\s*\[|\bvector\s*<|\barray\s*<|\bto_array\b", body))
-        if not has_decl and ("a[" in body or "arr[" in body or "binary" in body or "mid" in body):
+        if not has_decl and ("a[" in body or "arr[" in body or "binary" in body or "mid" in body or "quick" in body or "pivot" in body):
             var_guess = "a" if "a[" in body else "arr"
             self.main_array_name = var_guess
             self.arrays[var_guess] = [5, 12, 18, 25, 33, 47, 56, 68, 79, 91]
@@ -756,6 +831,10 @@ class CppUniversalEngine:
 
     def clean_condition(self, cond_str):
         c_clean = str(cond_str)
+        # Автоматичне вилучення/нейтралізація cin у перевірках умов (без запитів до користувача)
+        c_clean = re.sub(r'!\s*\(\s*(?:std\s*::\s*)?cin\s*>>\s*[^)]+\)', ' False ', c_clean)
+        c_clean = re.sub(r'!\s*(?:std\s*::\s*)?cin\s*>>\s*\w+', ' False ', c_clean)
+        c_clean = re.sub(r'(?:std\s*::\s*)?cin\s*>>\s*[^&|()]+', ' True ', c_clean)
         c_clean = re.sub(r"&&", " and ", c_clean)
         c_clean = re.sub(r"\|\|", " or ", c_clean)
         c_clean = re.sub(r"!", " not ", c_clean)
@@ -917,7 +996,7 @@ class CppUniversalEngine:
                 self.execute_statement(stmt, steps)
 
     def run_if_condition(self, cond_expr, body_stmt, steps):
-        cond_clean = cond_expr
+        cond_clean = self.clean_condition(cond_expr)
 
         def repl_arr(m):
             aname = m.group(1)
@@ -1155,7 +1234,9 @@ class CppUniversalEngine:
 
     def execute_statement(self, stmt, steps):
         s = " ".join(stmt.split()).strip()
-        if not s or s.startswith("cout") or s.startswith("return"):
+        if not s or s.startswith("cout") or s.startswith("return") or s.startswith("std::cout"):
+            return
+        if re.search(r"\b(?:std\s*::\s*)?cin\s*>>", s):
             return
 
         # 0. std::to_array
@@ -1208,7 +1289,7 @@ class CppUniversalEngine:
             return
 
         # Змінні: int temp = a[j], int i = 0, low, high, mid, target
-        var_assign_m = re.match(r"^(?:(?:int|double|float|auto|bool|size_t)\s+)?([a-zA-Z_]\w*)\s*=\s*(.+)$", s)
+        var_assign_m = re.match(r"^(?:(?:constexpr|const|int|double|float|auto|bool|size_t)\s+)*([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)([^{}]+)\s*\}?$", s)
         if var_assign_m:
             vname = var_assign_m.group(1)
             rhs = var_assign_m.group(2)
@@ -1390,6 +1471,44 @@ class CppUniversalEngine:
                         self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
                         self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                     ))
+                return
+
+                # 3.1. quick_sort / quickSort / quicksort
+        qs_call = re.match(r"(?:(?:void|int)\s+)?(?:std\s*::\s*)?(?:quick_sort|quickSort|quicksort)\s*\(([^)]+)\)", s)
+        if qs_call:
+            args = [a.strip() for a in qs_call.group(1).split(',')]
+            target_name = self.main_array_name
+            if args[0] in self.arrays:
+                target_name = args[0]
+            elif self.main_array_name in self.arrays:
+                target_name = self.main_array_name
+
+            if target_name in self.arrays:
+                arr = self.arrays[target_name]
+                low_idx = 0
+                high_idx = len(arr) - 1
+                if len(args) >= 3:
+                    try:
+                        low_idx = int(self.eval_expression(args[1]))
+                        high_idx = int(self.eval_expression(args[2]))
+                    except Exception:
+                        pass
+
+                steps.append((
+                    list(arr),
+                    f"Запуск Quick Sort (Швидке сортування) для {target_name}[{low_idx}...{high_idx}]",
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None, None
+                ))
+
+                self.run_quicksort_visualizer(target_name, low_idx, high_idx, steps)
+
+                steps.append((
+                    list(arr),
+                    f"Quick Sort ({target_name}): масив повністю відсортовано!",
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, None, None,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None, None
+                ))
                 return
 
         # 3. std::sort / std::ranges::sort / std::stable_sort
@@ -2139,6 +2258,7 @@ class CodeVisualizer(QWidget):
             found_idx = step_data[12] if len(step_data) > 12 else None
             bin_range = step_data[13] if len(step_data) > 13 else None
             bin_mid = step_data[14] if len(step_data) > 14 else None
+            pivot_idx = step_data[15] if len(step_data) > 15 else None
 
             self.anim_widget.update_variables(
                 arr_state, 
@@ -2155,7 +2275,8 @@ class CodeVisualizer(QWidget):
                 search_index=search_idx,
                 found_index=found_idx,
                 binary_range=bin_range,
-                binary_mid=bin_mid
+                binary_mid=bin_mid,
+                pivot_index=pivot_idx
             )
             self.current_step += 1
         else:
