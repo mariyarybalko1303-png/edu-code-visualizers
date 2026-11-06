@@ -453,7 +453,13 @@ class CodeRunner(QThread):
         self.meta_info = {
             "has_loops": False,
             "classes": {},
-            "relations": []
+            "relations": [],
+            "file_ops": {
+                "has_files": False,
+                "input_file": None,
+                "output_file": None,
+                "file_code_lines": []
+            }
         }
 
     def provide_input(self, text: str):
@@ -472,10 +478,66 @@ class CodeRunner(QThread):
     def _analyze_and_instrument(self, tree: ast.AST) -> ast.AST:
         class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
         known_classes = {c.name for c in class_nodes}
+        code_lines = self.code.splitlines()
 
         for node in ast.walk(tree):
             if isinstance(node, (ast.For, ast.While)):
                 self.meta_info["has_loops"] = True
+            elif isinstance(node, ast.Call):
+                func_name = ""
+                if isinstance(node.func, ast.Name):
+                    func_name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    func_name = node.func.attr
+                
+                if func_name in ("Path", "open", "read_text", "write_text", "read", "write", "writelines", "splitlines", "DictReader", "DictWriter", "dump", "dumps", "load", "loads"):
+                    self.meta_info["file_ops"]["has_files"] = True
+
+                    if hasattr(node, "lineno") and 0 <= node.lineno - 1 < len(code_lines):
+                        cline = code_lines[node.lineno - 1].strip()
+                        if cline and cline not in self.meta_info["file_ops"]["file_code_lines"]:
+                            self.meta_info["file_ops"]["file_code_lines"].append(cline)
+
+                    is_write_mode = False
+                    if func_name in ("write_text", "write", "writelines", "DictWriter", "dump"):
+                        is_write_mode = True
+                    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                        if any(m in node.args[1].value for m in ("w", "a", "x")):
+                            is_write_mode = True
+                    for kw in node.keywords:
+                        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                            if any(m in str(kw.value.value) for m in ("w", "a", "x")):
+                                is_write_mode = True
+
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            val = arg.value
+                            if any(val.endswith(ext) for ext in (".txt", ".csv", ".json", ".dat", ".log", ".xml", ".md")):
+                                if is_write_mode or any(k in val.lower() for k in ("out", "res", "dest", "write", "summary")):
+                                    self.meta_info["file_ops"]["output_file"] = val
+                                else:
+                                    if not self.meta_info["file_ops"]["input_file"]:
+                                        self.meta_info["file_ops"]["input_file"] = val
+
+            elif isinstance(node, ast.Assign):
+                target_names = []
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        target_names.append(t.id.lower())
+                    elif isinstance(t, ast.Attribute):
+                        target_names.append(t.attr.lower())
+                
+                if isinstance(node.value, ast.Call):
+                    call_node = node.value
+                    for arg in call_node.args:
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            val = arg.value
+                            if any(val.endswith(ext) for ext in (".txt", ".csv", ".json", ".dat", ".log", ".xml", ".md")):
+                                if any(t in ("out", "output", "dest", "res", "result", "target", "summary", "f_out", "w_file", "writer") for t in target_names) or "out" in val.lower() or "res" in val.lower():
+                                    self.meta_info["file_ops"]["output_file"] = val
+                                else:
+                                    if not self.meta_info["file_ops"]["input_file"]:
+                                        self.meta_info["file_ops"]["input_file"] = val
             elif isinstance(node, ast.ClassDef):
                 base_name = "object"
                 if node.bases:
@@ -516,10 +578,15 @@ class CodeRunner(QThread):
                 for stmt in body_list:
                     transformed_stmt = self.visit(stmt)
                     new_body.append(transformed_stmt)
-                    new_body.append(self._create_step_call())
+                    if not isinstance(transformed_stmt, (ast.Return, ast.Break, ast.Continue, ast.Raise)):
+                        new_body.append(self._create_step_call())
                 return new_body
 
             def visit_Module(self, node):
+                node.body = self._wrap_body(node.body)
+                return node
+
+            def visit_FunctionDef(self, node):
                 node.body = self._wrap_body(node.body)
                 return node
 
@@ -535,6 +602,18 @@ class CodeRunner(QThread):
                 node.body = self._wrap_body(node.body)
                 if node.orelse:
                     node.orelse = self._wrap_body(node.orelse)
+                return node
+
+            def visit_Try(self, node):
+                node.body = self._wrap_body(node.body)
+                if node.finalbody:
+                    node.finalbody = self._wrap_body(node.finalbody)
+                if node.orelse:
+                    node.orelse = self._wrap_body(node.orelse)
+                return node
+
+            def visit_With(self, node):
+                node.body = self._wrap_body(node.body)
                 return node
 
         transformer = UniversalStepInjector()
@@ -1112,11 +1191,268 @@ class AdaptiveAnimationWidget(QWidget):
                 anim_add.finished.connect(lambda a=anim_add: self.active_animations.remove(a) if a in self.active_animations else None)
                 anim_add.start()
 
+
+    def _draw_file_pipeline(self, file_info: dict, variables: dict, cx: int, y: int):
+        """Динамічна візуалізація 3-хетапного файлового пайплайну:
+        [ Блок 1: Файл (назва) ] ──▶ [ Блок 2: Зміст та дія у коді ] ──▶ [ Блок 3: Результат та остаточний зміст ]
+        """
+        import os
+
+        # 1. Динамічне визначення назв файлів
+        input_name = file_info.get("input_file")
+        output_name = file_info.get("output_file")
+
+        if not input_name:
+            for k, v in variables.items():
+                if isinstance(v, str) and any(v.endswith(ext) for ext in (".txt", ".csv", ".json", ".dat", ".log", ".xml", ".md")):
+                    if any(x in k.lower() for x in ("in", "input", "src", "source", "file", "path")):
+                        input_name = v
+                        break
+        if not input_name:
+            input_name = "вхідний_файл"
+
+        if not output_name:
+            for k, v in variables.items():
+                if isinstance(v, str) and any(v.endswith(ext) for ext in (".txt", ".csv", ".json", ".dat", ".log", ".xml", ".md")):
+                    if any(x in k.lower() for x in ("out", "output", "dest", "res", "target", "result", "summary")) and v != input_name:
+                        output_name = v
+                        break
+        if not output_name:
+            output_name = "вихідний_файл"
+
+        # 2. Динамічне отримання початкового вмісту файлу (Блок 1) - БЕЗ ДЕМО-ДАНИХ
+        raw_lines = []
+        if input_name and os.path.exists(input_name):
+            try:
+                with open(input_name, "r", encoding="utf-8") as f_in:
+                    file_text = f_in.read()
+                    if file_text.strip():
+                        raw_lines = file_text.splitlines()
+            except Exception:
+                pass
+
+        if not raw_lines:
+            for k in ("lines", "data", "content", "text", "raw_data", "file_data", "input_data", "src", "raw_lines"):
+                if k in variables:
+                    v = variables[k]
+                    if isinstance(v, list):
+                        raw_lines = [str(x) for x in v]
+                    elif isinstance(v, str):
+                        raw_lines = v.splitlines()
+                    break
+
+        if not raw_lines:
+            str_vars = [str(v) for k, v in variables.items() if isinstance(v, str) and not k.startswith("_")]
+            if str_vars:
+                raw_lines = str_vars[0].splitlines()
+
+        if not raw_lines:
+            raw_lines = ["(очікування зчитання даних...)"]
+
+        # 3. Динамічне отримання дійсних ліній коду користувача (Блок 2) - БЕЗ ТЕСТОВОГО КОДУ
+        code_lines = file_info.get("file_code_lines", [])
+        if not code_lines:
+            file_var_ops = [f"{k} = {v}" for k, v in variables.items() if not k.startswith("_") and not isinstance(v, (list, dict))]
+            if file_var_ops:
+                code_lines = file_var_ops[:5]
+            else:
+                code_lines = ["# Виконання файлових операцій..."]
+
+        # 4. Динамічне отримання результату обробки (Блок 3) - БЕЗ ДЕМО-ЧИСЕЛ
+        total_val = None
+        if output_name and os.path.exists(output_name):
+            try:
+                with open(output_name, "r", encoding="utf-8") as f_out:
+                    out_text = f_out.read().strip()
+                    if out_text:
+                        total_val = out_text
+            except Exception:
+                pass
+
+        if not total_val:
+            for res_key in ("total", "result", "output", "res", "summary", "out_text", "ans", "score", "count", "sum_val", "data"):
+                if res_key in variables:
+                    total_val = str(variables[res_key])
+                    break
+
+        if not total_val:
+            non_list_vars = {k: str(v) for k, v in variables.items() if not isinstance(v, (list, dict)) and not k.startswith("_")}
+            if non_list_vars:
+                first_k = next(iter(non_list_vars))
+                total_val = f"{first_k} = {non_list_vars[first_k]}"
+            else:
+                total_val = "(очікування результату...)"
+
+        # 5. Побудова графічної сцени PyQt6 (3 класичні блоки)
+        title = QGraphicsTextItem("📄 Візуалізація файлових операцій")
+        title.setDefaultTextColor(QColor("#004085"))
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setPos(cx - title.boundingRect().width() / 2, y)
+        self.scene.addItem(title)
+        self.static_items.append(title)
+        y += 35
+
+        subtitle_text = f"[ Блок 1: Файл ({input_name}) ] ──▶ [ Блок 2: Зміст та дія у коді ] ──▶ [ Блок 3: Результат ({output_name}) ]"
+        subtitle = QGraphicsTextItem(subtitle_text)
+        subtitle.setDefaultTextColor(QColor("#2B6CB0"))
+        subtitle.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        subtitle.setPos(cx - subtitle.boundingRect().width() / 2, y)
+        self.scene.addItem(subtitle)
+        self.static_items.append(subtitle)
+        y += 35
+
+        col_w = 230
+        gap = 35
+        start_x = cx - (3 * col_w + 2 * gap) / 2
+        y_box = y + 25
+
+        # --- БЛОК 1: Файл (назва) ---
+        x1 = start_x
+        lbl1 = QGraphicsTextItem(f"[ Блок 1: Файл ({input_name}) ]")
+        lbl1.setDefaultTextColor(QColor("#1A202C"))
+        lbl1.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        lbl1.setPos(x1 + (col_w - lbl1.boundingRect().width()) / 2, y)
+        self.scene.addItem(lbl1)
+        self.static_items.append(lbl1)
+
+        box1_h = max(120, min(240, len(raw_lines) * 24 + 20))
+        rect1 = QGraphicsRectItem(x1, y_box, col_w, box1_h)
+        rect1.setBrush(QBrush(QColor("#1E1F22")))
+        rect1.setPen(QPen(QColor("#3574F0"), 2))
+        self.scene.addItem(rect1)
+        self.static_items.append(rect1)
+
+        line_y = y_box + 10
+        for idx, val in enumerate(raw_lines[:9], 1):
+            num_txt = QGraphicsTextItem(f"{idx}")
+            num_txt.setDefaultTextColor(QColor("#718096"))
+            num_txt.setFont(QFont("Consolas", 10))
+            num_txt.setPos(x1 + 8, line_y)
+            self.scene.addItem(num_txt)
+            self.static_items.append(num_txt)
+
+            display_val = str(val)
+            if len(display_val) > 22:
+                display_val = display_val[:20] + "..."
+
+            val_txt = QGraphicsTextItem(display_val)
+            val_txt.setDefaultTextColor(QColor("#68D391"))
+            val_txt.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+            val_txt.setPos(x1 + 32, line_y)
+            self.scene.addItem(val_txt)
+            self.static_items.append(val_txt)
+            line_y += 24
+
+        hand_rect = QGraphicsRectItem(x1 + 5, y_box + box1_h + 12, col_w - 10, 30)
+        hand_rect.setBrush(QBrush(QColor("#FEFCBF")))
+        hand_rect.setPen(QPen(QColor("#B7791F"), 1.6))
+        self.scene.addItem(hand_rect)
+        self.static_items.append(hand_rect)
+
+        hand_txt = QGraphicsTextItem(f"Початковий зміст {input_name}")
+        hand_txt.setDefaultTextColor(QColor("#744210"))
+        hand_txt.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hand_txt.setPos(x1 + (col_w - hand_txt.boundingRect().width()) / 2, y_box + box1_h + 17)
+        self.scene.addItem(hand_txt)
+        self.static_items.append(hand_txt)
+
+        # --- БЛОК 2: Зміст та дія у коді ---
+        x2 = x1 + col_w + gap
+        lbl2 = QGraphicsTextItem("[ Блок 2: Зміст та дія у коді ]")
+        lbl2.setDefaultTextColor(QColor("#1A202C"))
+        lbl2.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        lbl2.setPos(x2 + (col_w - lbl2.boundingRect().width()) / 2, y)
+        self.scene.addItem(lbl2)
+        self.static_items.append(lbl2)
+
+        arrow1_y = y_box + 45
+        self._draw_arrow(x1 + col_w + 5, arrow1_y, x2 - 5, arrow1_y, color="#3574F0", width=2.5)
+
+        box2_h = max(120, min(260, len(code_lines) * 22 + 20))
+        rect2 = QGraphicsRectItem(x2, y_box, col_w, box2_h)
+        rect2.setBrush(QBrush(QColor("#2B2D30")))
+        rect2.setPen(QPen(QColor("#4E5157"), 1.8))
+        self.scene.addItem(rect2)
+        self.static_items.append(rect2)
+
+        cy_code = y_box + 10
+        for cline in code_lines[:10]:
+            display_cline = str(cline)
+            if len(display_cline) > 28:
+                display_cline = display_cline[:26] + "..."
+
+            ccolor = "#E2E8F0"
+            if any(kw in display_cline for kw in ("from ", "import ", "with ", " as ", "for ", "in ", "if ", "def ")):
+                ccolor = "#CC7832"
+            elif any(fn in display_cline for fn in ("read_text", "write_text", "open", "Path", "splitlines", "sum", "int", "dump", "read", "write")):
+                ccolor = "#68D391"
+            elif '"' in display_cline or "'" in display_cline:
+                ccolor = "#CE9178"
+
+            ctxt = QGraphicsTextItem(display_cline)
+            ctxt.setDefaultTextColor(QColor(ccolor))
+            ctxt.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+            ctxt.setPos(x2 + 6, cy_code)
+            self.scene.addItem(ctxt)
+            self.static_items.append(ctxt)
+            cy_code += 22
+
+        # --- БЛОК 3: Результат та остаточний зміст ---
+        x3 = x2 + col_w + gap
+        lbl3 = QGraphicsTextItem(f"[ Блок 3: Результат ({output_name}) ]")
+        lbl3.setDefaultTextColor(QColor("#1A202C"))
+        lbl3.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        lbl3.setPos(x3 + (col_w - lbl3.boundingRect().width()) / 2, y)
+        self.scene.addItem(lbl3)
+        self.static_items.append(lbl3)
+
+        self._draw_arrow(x2 + col_w + 5, arrow1_y, x3 - 5, arrow1_y, color="#38A169", width=2.5)
+
+        box3_h = max(80, box1_h - 20)
+        rect3 = QGraphicsRectItem(x3, y_box, col_w, box3_h)
+        rect3.setBrush(QBrush(QColor("#1E1F22")))
+        rect3.setPen(QPen(QColor("#38A169"), 2))
+        self.scene.addItem(rect3)
+        self.static_items.append(rect3)
+
+        out_header = QGraphicsTextItem("Остаточний зміст:")
+        out_header.setDefaultTextColor(QColor("#A0AEC0"))
+        out_header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        out_header.setPos(x3 + 10, y_box + 8)
+        self.scene.addItem(out_header)
+        self.static_items.append(out_header)
+
+        out_display = str(total_val)
+        if len(out_display) > 25:
+            out_display = out_display[:23] + "..."
+
+        out_val = QGraphicsTextItem(out_display)
+        out_val.setDefaultTextColor(QColor("#ECC94B"))
+        out_val.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+        out_val.setPos(x3 + 10, y_box + 32)
+        self.scene.addItem(out_val)
+        self.static_items.append(out_val)
+
+        out_lbl_rect = QGraphicsRectItem(x3 + 5, y_box + box3_h + 12, col_w - 10, 30)
+        out_lbl_rect.setBrush(QBrush(QColor("#C6F6D5")))
+        out_lbl_rect.setPen(QPen(QColor("#2F855A"), 1.6))
+        self.scene.addItem(out_lbl_rect)
+        self.static_items.append(out_lbl_rect)
+
+        out_lbl = QGraphicsTextItem(f"Збережено у {output_name}")
+        out_lbl.setDefaultTextColor(QColor("#22543D"))
+        out_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        out_lbl.setPos(x3 + (col_w - out_lbl.boundingRect().width()) / 2, y_box + box3_h + 17)
+        self.scene.addItem(out_lbl)
+        self.static_items.append(out_lbl)
+
     def update_variables(self, variables: dict, meta_info: dict):
         self._clear_static_items()
 
         has_classes = bool(meta_info.get("classes"))
         has_loops = meta_info.get("has_loops", False)
+        file_info = meta_info.get("file_ops", {})
+        has_files = file_info.get("has_files", False) or ("path" in variables) or ("input.txt" in str(variables)) or any("file" in k.lower() for k in variables)
 
         cx = max(380, self.view.width() // 2)
         y = 30
@@ -1149,7 +1485,9 @@ class AdaptiveAnimationWidget(QWidget):
                 self.scene.removeItem(self.array_title_item)
                 self.array_title_item = None
 
-        if has_classes:
+        if has_files:
+            self._draw_file_pipeline(file_info, variables, cx, y)
+        elif has_classes:
             title = QGraphicsTextItem("Ієрархія класів (ООП)")
             title.setDefaultTextColor(QColor("#004085"))
             title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
