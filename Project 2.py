@@ -347,11 +347,11 @@ class AdaptiveAnimationWidget(QWidget):
                 lbl = self.scene.addText(f"{arr_name}:")
                 lbl.setFont(QFont("Consolas", 12, QFont.Bold))
                 lbl.setDefaultTextColor(QColor("#2c3e50"))
-                lbl.setPos(15.0, row_y + 8.0)
+                lbl.setPos(-85.0, row_y + 9.0)
                 self.array_rows[arr_name] = {'label': lbl, 'blocks': []}
             else:
                 lbl = self.array_rows[arr_name]['label']
-                lbl.setPos(15.0, row_y + 8.0)
+                lbl.setPos(-85.0, row_y + 9.0)
                 lbl.setPlainText(f"{arr_name}:")
 
             blocks_list = self.array_rows[arr_name]['blocks']
