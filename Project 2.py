@@ -347,11 +347,11 @@ class AdaptiveAnimationWidget(QWidget):
                 lbl = self.scene.addText(f"{arr_name}:")
                 lbl.setFont(QFont("Consolas", 12, QFont.Bold))
                 lbl.setDefaultTextColor(QColor("#2c3e50"))
-                lbl.setPos(-85.0, row_y + 9.0)
+                lbl.setPos(-85.0, row_y + 8.0)
                 self.array_rows[arr_name] = {'label': lbl, 'blocks': []}
             else:
                 lbl = self.array_rows[arr_name]['label']
-                lbl.setPos(-85.0, row_y + 9.0)
+                lbl.setPos(-85.0, row_y + 8.0)
                 lbl.setPlainText(f"{arr_name}:")
 
             blocks_list = self.array_rows[arr_name]['blocks']
@@ -565,11 +565,13 @@ class CppUniversalEngine:
     @staticmethod
     def parse_nested_array(init_str):
         """Перетворення списку ініціалізації C++ {{1, 2}, {3, 4}} у вкладений список Python."""
-        s = init_str.strip()
+        s = init_str.strip().rstrip(';').strip()
         if not s:
             return []
         py_str = re.sub(r'\{', '[', s)
         py_str = re.sub(r'\}', ']', py_str)
+        while py_str.count('[') < py_str.count(']') and py_str.endswith(']'):
+            py_str = py_str[:-1].strip()
         try:
             return eval(py_str, {"__builtins__": {}})
         except Exception:
@@ -586,6 +588,7 @@ class CppUniversalEngine:
 
     def __init__(self):
         self.scopes = [{}]  # Стек областей видимості
+        self.type_aliases = {}
         self.iterators = {}
         self.arrays = {}
         self.main_array_name = "arr"
@@ -615,6 +618,63 @@ class CppUniversalEngine:
         self.precision = 2
         self.fixed_format = False
         self.last_eval_error = None
+
+
+    def pad_multidim(self, vals, dims, default_val=0):
+        if not dims:
+            return vals
+        if len(dims) == 2 and isinstance(vals, list) and len(vals) == 1 and isinstance(vals[0], list) and len(vals[0]) > 0 and isinstance(vals[0][0], list):
+            vals = vals[0]
+        if len(dims) == 1:
+            target_len = dims[0]
+            res = list(vals)[:target_len] if isinstance(vals, (list, tuple)) else []
+            while len(res) < target_len:
+                res.append(default_val)
+            return res
+        elif len(dims) == 2:
+            target_rows, target_cols = dims[0], dims[1]
+            res = []
+            vals_list = list(vals) if isinstance(vals, (list, tuple)) else []
+            for r in range(target_rows):
+                row_vals = vals_list[r] if r < len(vals_list) and isinstance(vals_list[r], (list, tuple)) else []
+                padded_row = list(row_vals)[:target_cols]
+                while len(padded_row) < target_cols:
+                    padded_row.append(default_val)
+                res.append(padded_row)
+            return res
+        elif len(dims) == 3:
+            target_d1, target_d2, target_d3 = dims[0], dims[1], dims[2]
+            res = []
+            vals_list = list(vals) if isinstance(vals, (list, tuple)) else []
+            for i in range(target_d1):
+                layer = vals_list[i] if i < len(vals_list) and isinstance(vals_list[i], (list, tuple)) else []
+                layer_list = list(layer) if isinstance(layer, (list, tuple)) else []
+                layer_res = []
+                for j in range(target_d2):
+                    row = layer_list[j] if j < len(layer_list) and isinstance(layer_list[j], (list, tuple)) else []
+                    padded_row = list(row)[:target_d3]
+                    while len(padded_row) < target_d3:
+                        padded_row.append(default_val)
+                    layer_res.append(padded_row)
+                res.append(layer_res)
+            return res
+        return vals
+
+    def parse_std_array_type(self, type_str):
+        dims = []
+        curr = type_str.strip()
+        elem_type = "int"
+        while True:
+            m = re.match(r"^(?:std\s*::\s*)?array\s*<\s*(.+)\s*,\s*([^>]+)\s*>$", curr)
+            if not m:
+                elem_type = curr.strip()
+                break
+            inner_type = m.group(1).strip()
+            dim_expr = m.group(2).strip()
+            dim_val = int(self.eval_expression(dim_expr))
+            dims.append(dim_val)
+            curr = inner_type
+        return dims, elem_type
 
     def parse_num(self, val):
         if isinstance(val, (set, list, tuple)):
@@ -708,6 +768,45 @@ class CppUniversalEngine:
         # Вилучення standalone операцій введення cin >> ... ;
         no_cin_stmts = re.sub(r"\b(?:std\s*::\s*)?cin\s*>>\s*[^;]+;", "", no_line_comments)
         normalized = re.sub(r"\b(long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, no_cin_stmts)
+        normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
+        normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
+        normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
+
+        self.type_aliases = {}
+        no_cin_lines = no_cin_stmts.splitlines()
+        for line in no_cin_lines:
+            l = line.strip()
+            m_using = re.match(r"^using\s+([a-zA-Z_]\w*)\s*=\s*(.+);", l)
+            if m_using:
+                alias = m_using.group(1).strip()
+                target = m_using.group(2).strip()
+                for k, v in list(self.type_aliases.items()):
+                    target = re.sub(rf"\b{k}\b", v, target)
+                self.type_aliases[alias] = target
+
+        normalized_code = no_cin_stmts
+        for alias, target in list(self.type_aliases.items()):
+            normalized_code = re.sub(rf"\b{alias}\b", target, normalized_code)
+
+        # Normalize std::size_t -> size_t
+        normalized_code = re.sub(r"\bstd\s*::\s*size_t\b", "size_t", normalized_code)
+
+        # Normalize uniform initializations type var{val}; or type var{}; -> type var = val; or type var = 0;
+        def repl_uniform_init(m):
+            qual, type_name, var_name, init_val = m.group(1) or "", m.group(2), m.group(3), m.group(4).strip()
+            if "{" in init_val or "[" in var_name or "array" in type_name:
+                return m.group(0)
+            if not init_val:
+                init_val = "0.0" if type_name in ("double", "float") else "0"
+            return f"{qual}{type_name} {var_name} = {init_val};"
+
+        normalized_code = re.sub(
+            r"\b(constexpr\s+|const\s+)?(long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*)\s*\{\s*([^}]*)\s*\}\s*;",
+            repl_uniform_init,
+            normalized_code
+        )
+
+        normalized = re.sub(r"\b(long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+([a-zA-Z_]\w*\s*=[^;]+);?", repl_comma_decls, normalized_code)
         normalized = re.sub(r"\bint\s*=\s*", "int temp = ", normalized)
         normalized = re.sub(r"=\s*;\s*$", "= temp;", normalized, flags=re.MULTILINE)
         normalized = re.sub(r"=\s*;\s*", "= temp; ", normalized)
@@ -894,55 +993,51 @@ class CppUniversalEngine:
 
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        # 3D Доступ: a[i][j][k]
+        # 3D Array access tensor[i][j][k]
         def repl_3d_access(m):
-            aname = m.group(1)
-            i_str, j_str, k_str = m.group(2), m.group(3), m.group(4)
+            aname, r1, r2, r3 = m.group(1), m.group(2), m.group(3), m.group(4)
             if aname in self.arrays and isinstance(self.arrays[aname], list):
                 try:
-                    i = int(self.eval_expression(i_str))
-                    j = int(self.eval_expression(j_str))
-                    k = int(self.eval_expression(k_str))
-                    return str(self.arrays[aname][i][j][k])
+                    i1, i2, i3 = int(self.eval_expression(r1)), int(self.eval_expression(r2)), int(self.eval_expression(r3))
+                    return str(self.arrays[aname][i1][i2][i3])
                 except Exception:
                     pass
             return m.group(0)
-
         expr = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_3d_access, expr)
 
-        # 2D Доступ: a[i][j]
+        # 2D Array access matrix[i][j]
         def repl_2d_access(m):
-            aname = m.group(1)
-            i_str, j_str = m.group(2), m.group(3)
+            aname, r1, r2 = m.group(1), m.group(2), m.group(3)
             if aname in self.arrays and isinstance(self.arrays[aname], list):
                 try:
-                    i = int(self.eval_expression(i_str))
-                    j = int(self.eval_expression(j_str))
-                    return str(self.arrays[aname][i][j])
+                    i1, i2 = int(self.eval_expression(r1)), int(self.eval_expression(r2))
+                    return str(self.arrays[aname][i1][i2])
                 except Exception:
                     pass
             return m.group(0)
-
         expr = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_2d_access, expr)
 
-        # 1D Доступ: a[i] або a.at(i)
+        # 1D Array access arr[i]
         def repl_array_access(m):
             aname = m.group(1)
             raw_i = m.group(2) or m.group(3)
-            if aname in self.arrays:
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
                 try:
                     eval_idx = int(self.eval_expression(raw_i))
                     arr_ref = self.arrays[aname]
-                    if isinstance(arr_ref, list) and 0 <= eval_idx < len(arr_ref):
+                    if 0 <= eval_idx < len(arr_ref):
                         return str(arr_ref[eval_idx])
                 except Exception:
                     pass
             return m.group(0)
-
         expr = re.sub(r"\b(\w+)\s*(?:\[([^\]]+)\]|\.at\s*\(([^)]+)\))", repl_array_access, expr)
 
         for name, arr in self.arrays.items():
-            expr = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), expr)
+            if isinstance(arr, list) and len(arr) > 0 and isinstance(arr[0], list):
+                expr = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\[[^\]]+\]\s*\)", str(len(arr[0])), expr)
+                expr = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), expr)
+            elif isinstance(arr, list):
+                expr = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), expr)
             if arr:
                 expr = re.sub(rf"\b{name}\.front\s*\(\s*\)", str(arr[0]), expr)
                 expr = re.sub(rf"\b{name}\.back\s*\(\s*\)", str(arr[-1]), expr)
@@ -1048,7 +1143,6 @@ class CppUniversalEngine:
 
     def clean_condition(self, cond_str):
         c_clean = str(cond_str)
-        # Автоматичне вилучення/нейтралізація cin у перевірках умов (без запитів до користувача)
         c_clean = re.sub(r'!\s*\(\s*(?:std\s*::\s*)?cin\s*>>\s*[^)]+\)', ' False ', c_clean)
         c_clean = re.sub(r'!\s*(?:std\s*::\s*)?cin\s*>>\s*\w+', ' False ', c_clean)
         c_clean = re.sub(r'(?:std\s*::\s*)?cin\s*>>\s*[^&|()]+', ' True ', c_clean)
@@ -1056,10 +1150,34 @@ class CppUniversalEngine:
         c_clean = re.sub(r"\|\|", " or ", c_clean)
         c_clean = re.sub(r"!", " not ", c_clean)
 
+        # 3D Array access tensor[i][j][k]
+        def repl_3d_cond(m):
+            aname, r1, r2, r3 = m.group(1), m.group(2), m.group(3), m.group(4)
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
+                try:
+                    i1, i2, i3 = int(self.eval_expression(r1)), int(self.eval_expression(r2)), int(self.eval_expression(r3))
+                    return str(self.arrays[aname][i1][i2][i3])
+                except Exception:
+                    pass
+            return m.group(0)
+        c_clean = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_3d_cond, c_clean)
+
+        # 2D Array access matrix[i][j]
+        def repl_2d_cond(m):
+            aname, r1, r2 = m.group(1), m.group(2), m.group(3)
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
+                try:
+                    i1, i2 = int(self.eval_expression(r1)), int(self.eval_expression(r2))
+                    return str(self.arrays[aname][i1][i2])
+                except Exception:
+                    pass
+            return m.group(0)
+        c_clean = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_2d_cond, c_clean)
+
         def repl_arr(m):
             aname = m.group(1)
             raw_i = m.group(2) or m.group(3)
-            if aname in self.arrays:
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
                 try:
                     eval_idx = int(self.eval_expression(raw_i))
                     arr_ref = self.arrays[aname]
@@ -1068,14 +1186,17 @@ class CppUniversalEngine:
                 except Exception:
                     pass
             return m.group(0)
-
-        c_clean = re.sub(r"\b(\w+)\s*(?:\.at\s*\(([^)]+)\)|\[([^\]]+)\])", repl_arr, c_clean)
+        c_clean = re.sub(r"\b(\w+)\s*(?:\[([^\]]+)\]|\.at\s*\(([^)]+)\))", repl_arr, c_clean)
 
         for k, v in self.variables.items():
             c_clean = re.sub(rf"\b{k}\b", str(v), c_clean)
 
         for name, arr in self.arrays.items():
-            c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), c_clean)
+            if isinstance(arr, list) and len(arr) > 0 and isinstance(arr[0], list):
+                c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\[[^\]]+\]\s*\)", str(len(arr[0])), c_clean)
+                c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), c_clean)
+            elif isinstance(arr, list):
+                c_clean = re.sub(rf"\b(?:std\s*::\s*)?(?:s)?size\s*\(\s*{name}\s*\)", str(len(arr)), c_clean)
             c_clean = re.sub(rf"\b{name}\.size\s*\(\s*\)", str(len(arr)), c_clean)
             c_clean = re.sub(rf"\b{name}\.capacity\s*\(\s*\)", str(self.current_capacity or len(arr)), c_clean)
 
@@ -1372,17 +1493,27 @@ class CppUniversalEngine:
         if ":" in header and ";" not in header:
             var_part, cont_part = [p.strip() for p in header.split(":", 1)]
             var_name = var_part.replace("&", "").split()[-1].strip()
-            cont_name = cont_part.strip()
-            if cont_name in self.arrays:
-                arr = self.arrays[cont_name]
-                for idx in range(len(arr)):
+            cont_expr = cont_part.strip()
+            arr_data = None
+            if cont_expr in self.arrays:
+                arr_data = self.arrays[cont_expr]
+            else:
+                m_idx = re.match(r"^([a-zA-Z_]\w*)\s*\[([^\]]+)\]$", cont_expr)
+                if m_idx:
+                    aname = m_idx.group(1)
+                    idx_val = int(self.eval_expression(m_idx.group(2)))
+                    if aname in self.arrays and 0 <= idx_val < len(self.arrays[aname]):
+                        arr_data = self.arrays[aname][idx_val]
+            
+            if arr_data is not None and isinstance(arr_data, (list, tuple)):
+                for idx in range(len(arr_data)):
                     self.push_scope()
-                    self.set_var(var_name, arr[idx], is_decl=True)
+                    self.set_var(var_name, arr_data[idx], is_decl=True)
                     self.execute_block(body, steps)
-                    if "&" in var_part and self.get_var(var_name) != arr[idx]:
-                        old = arr[idx]
-                        arr[idx] = self.get_var(var_name)
-                        steps.append((list(arr), f"{cont_name}[{idx}] = {arr[idx]} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
+                    if "&" in var_part and self.get_var(var_name) != arr_data[idx]:
+                        old = arr_data[idx]
+                        arr_data[idx] = self.get_var(var_name)
+                        steps.append((self.get_arrays_snapshot(), f"{cont_expr}[{idx}] = {arr_data[idx]} (було {old})", self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair, self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None))
                     self.pop_scope()
             return
 
@@ -1505,19 +1636,59 @@ class CppUniversalEngine:
             return
 
         # --- 2D/3D Оголошення багатовимірних масивів ---
-        m_multidim_decl = re.search(r"(?:int|auto|double|float|long|short)\s+(\w+)\s*((?:\[[^\]]+\])+)", s)
+        # Nested std::array declaration e.g. std::array<std::array<double, 4>, 3> a{};
+        if "array" in s and ("<" in s):
+            m_std_arr = re.search(r"^((?:std\s*::\s*)?array\s*<.+>)\s+([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)(.*)$", s)
+            if m_std_arr:
+                type_part = m_std_arr.group(1)
+                name = m_std_arr.group(2)
+                rest_init = m_std_arr.group(3)
+                dims, elem_type = self.parse_std_array_type(type_part)
+                if dims and len(dims) >= 2:
+                    self.main_array_name = name
+                    def_val = 0.0 if elem_type in ("double", "float") else 0
+                    init_vals = []
+                    brace_m = re.search(r"(\{.*\})", rest_init)
+                    if brace_m:
+                        init_vals = self.parse_nested_array(brace_m.group(1))
+                    init_vals = self.pad_multidim(init_vals, dims, def_val)
+                    self.arrays[name] = init_vals
+                    shape_str = "".join(f"[{d}]" for d in dims)
+                    steps.append((self.get_arrays_snapshot(),
+                        f"Оголошено багатовимірний std::array: {name}{shape_str}",
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                    ))
+                    return
+
+        # Multidimensional C-array declaration e.g. double carrots[3][4] {}; or double carrots[][4] { ... };
+        m_multidim_decl = re.search(r"(?:int|auto|double|float|long|short|char|bool|size_t)\s+([a-zA-Z_]\w*)\s*((?:\[[^\]]*\])+)", s)
         if m_multidim_decl:
             name = m_multidim_decl.group(1)
-            raw_dims = re.findall(r"\[([^\]]+)\]", m_multidim_decl.group(2))
-            dims = [int(self.eval_expression(d)) for d in raw_dims if d.strip()]
+            elem_type = m_multidim_decl.group(0).split()[0]
+            raw_dims = re.findall(r"\[([^\]]*)\]", m_multidim_decl.group(2))
+            brace_m = re.search(r"=\s*(\{.*\})", s) or re.search(r"(\{.*\});?$", s)
+            init_str = brace_m.group(1) if brace_m else ""
+            
+            dims = []
+            for d in raw_dims:
+                d_str = d.strip()
+                if d_str:
+                    dims.append(int(self.eval_expression(d_str)))
+                else:
+                    if init_str:
+                        top_lists = re.findall(r"\{[^{}]*\}", init_str)
+                        dims.append(len(top_lists))
+                    else:
+                        dims.append(1)
+
             if dims and len(dims) >= 2:
                 self.main_array_name = name
+                def_val = 0.0 if "double" in elem_type or "float" in elem_type else 0
                 init_vals = []
-                brace_m = re.search(r"=\s*(\{.*\})", s)
                 if brace_m:
                     init_vals = self.parse_nested_array(brace_m.group(1))
-                if not init_vals:
-                    init_vals = self.create_empty_multidim(dims)
+                init_vals = self.pad_multidim(init_vals, dims, def_val)
                 self.arrays[name] = init_vals
                 shape_str = "".join(f"[{d}]" for d in dims)
                 steps.append((self.get_arrays_snapshot(),
@@ -1586,10 +1757,10 @@ class CppUniversalEngine:
             return
 
         # Змінні: int temp = a[j], long long sumPositive{}, int i = 0, low, high, mid, target
-        var_assign_m = re.match(r"^(?:(?:constexpr|const|long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+)*([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)([^{}]*)\s*\}?;?$", s)
-        if var_assign_m and "array" not in s and "vector" not in s and "[" not in s:
+        var_assign_m = re.match(r"^(?:(?:constexpr|const|long\s+long|long|short|char|int|double|float|auto|bool|size_t)\s+)+([a-zA-Z_]\w*)\s*(?:=\s*|\{\s*)([^{}]*)\s*\}?;?$", s) or re.match(r"^([a-zA-Z_]\w*)\s*=\s*([^;{}]+);?$", s)
+        if var_assign_m and "array" not in s and "vector" not in s and "[" not in s.split("=")[0]:
             vname = var_assign_m.group(1)
-            rhs = var_assign_m.group(2).strip()
+            rhs = var_assign_m.group(2).rstrip(';').strip()
             if rhs in self.arrays:
                 self.arrays[vname] = list(self.arrays[rhs])
                 self.main_array_name = vname
@@ -2342,6 +2513,14 @@ class CppUniversalEngine:
                             self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
                             self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                         ))
+                    elif "min" in vname.lower():
+                        self.current_min_val = self.parse_num(val_eval)
+                        self.min_indices = [idx for idx, x in enumerate(curr_arr) if x == self.current_min_val]
+                        steps.append((self.get_arrays_snapshot(), 
+                            f"Ініціалізація мінімуму: {vname} = {self.current_min_val}", 
+                            self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                            self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                        ))
                     elif "count" in vname.lower() or "matched" in vname.lower() or "size" in vname.lower():
                         self.condition_count = int(val_eval)
                         self.current_size = int(val_eval)
@@ -2396,6 +2575,8 @@ class CppUniversalEngine:
             return
 
         if "=" in s:
+            if isinstance(arr, list) and len(arr) > 0 and isinstance(arr[0], list):
+                return
             lhs, rhs = s.split("=", 1)
             b_l = lhs.find("[")
             b_r = lhs.rfind("]")
