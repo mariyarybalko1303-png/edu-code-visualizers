@@ -458,7 +458,8 @@ class CodeRunner(QThread):
                 "has_files": False,
                 "input_file": None,
                 "output_file": None,
-                "file_code_lines": []
+                "file_code_lines": [],
+                "code_file_content": []
             }
         }
 
@@ -493,6 +494,13 @@ class CodeRunner(QThread):
                 if func_name in ("Path", "open", "read_text", "write_text", "read", "write", "writelines", "splitlines", "DictReader", "DictWriter", "dump", "dumps", "load", "loads"):
                     self.meta_info["file_ops"]["has_files"] = True
 
+                    if func_name in ("write_text", "write", "writelines", "dump"):
+                        for arg in node.args:
+                            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                                for l in arg.value.splitlines():
+                                    if l.strip() and l not in self.meta_info["file_ops"]["code_file_content"]:
+                                        self.meta_info["file_ops"]["code_file_content"].append(l)
+
                     if hasattr(node, "lineno") and 0 <= node.lineno - 1 < len(code_lines):
                         cline = code_lines[node.lineno - 1].strip()
                         if cline and cline not in self.meta_info["file_ops"]["file_code_lines"]:
@@ -521,6 +529,19 @@ class CodeRunner(QThread):
 
             elif isinstance(node, ast.Assign):
                 target_names = []
+                for t in node.targets:
+                    t_name = t.id.lower() if isinstance(t, ast.Name) else (t.attr.lower() if isinstance(t, ast.Attribute) else "")
+                    if any(k in t_name for k in ("content", "data", "text", "lines", "raw", "input", "file")):
+                        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                            for l in node.value.value.splitlines():
+                                if l.strip() and l not in self.meta_info["file_ops"]["code_file_content"]:
+                                    self.meta_info["file_ops"]["code_file_content"].append(l)
+                        elif isinstance(node.value, ast.List):
+                            for el in node.value.elts:
+                                if isinstance(el, ast.Constant):
+                                    l = str(el.value)
+                                    if l.strip() and l not in self.meta_info["file_ops"]["code_file_content"]:
+                                        self.meta_info["file_ops"]["code_file_content"].append(l)
                 for t in node.targets:
                     if isinstance(t, ast.Name):
                         target_names.append(t.id.lower())
@@ -1301,8 +1322,8 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(subtitle)
         y += 35
 
-        col_w = 230
-        gap = 35
+        col_w = 250
+        gap = 30
         start_x = cx - (3 * col_w + 2 * gap) / 2
         y_box = y + 25
 
@@ -1332,8 +1353,8 @@ class AdaptiveAnimationWidget(QWidget):
             self.static_items.append(num_txt)
 
             display_val = str(val)
-            if len(display_val) > 22:
-                display_val = display_val[:20] + "..."
+            if len(display_val) > 36:
+                display_val = display_val[:34] + "..."
 
             val_txt = QGraphicsTextItem(display_val)
             val_txt.setDefaultTextColor(QColor("#68D391"))
@@ -1368,7 +1389,40 @@ class AdaptiveAnimationWidget(QWidget):
         arrow1_y = y_box + 45
         self._draw_arrow(x1 + col_w + 5, arrow1_y, x2 - 5, arrow1_y, color="#3574F0", width=2.5)
 
-        box2_h = max(120, min(260, len(code_lines) * 22 + 20))
+        code_file_data = list(file_info.get("code_file_content", []))
+
+        # Динамічний збір сформованого тексту та записів даних зі змінних коду
+        extra_extracted = []
+        for k, v in variables.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, str) and item.strip():
+                        if item not in extra_extracted:
+                            extra_extracted.append(item)
+                    elif isinstance(item, dict):
+                        rec = " | ".join(f"{dk}: {dv}" for dk, dv in item.items())
+                        if rec not in extra_extracted:
+                            extra_extracted.append(rec)
+            elif isinstance(v, str):
+                if any(ext in v for ext in (".txt", ".csv", ".json", ".py", ".md")) and len(v.splitlines()) <= 1 and "|" not in v and ":" not in v:
+                    continue
+                lines_in_str = [l.strip() for l in v.splitlines() if l.strip()]
+                for l in lines_in_str:
+                    if l not in extra_extracted:
+                        extra_extracted.append(l)
+
+        for item in extra_extracted:
+            if item not in code_file_data:
+                code_file_data.append(item)
+
+        if raw_lines == ["(очікування зчитання даних...)"] and code_file_data:
+            raw_lines = code_file_data
+
+        extra_h = (min(8, len(code_file_data)) * 20 + 25) if code_file_data else 0
+        box2_h = max(120, min(340, len(code_lines[:7]) * 22 + 20 + extra_h))
+
         rect2 = QGraphicsRectItem(x2, y_box, col_w, box2_h)
         rect2.setBrush(QBrush(QColor("#2B2D30")))
         rect2.setPen(QPen(QColor("#4E5157"), 1.8))
@@ -1376,10 +1430,10 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(rect2)
 
         cy_code = y_box + 10
-        for cline in code_lines[:10]:
+        for cline in code_lines[:7]:
             display_cline = str(cline)
-            if len(display_cline) > 28:
-                display_cline = display_cline[:26] + "..."
+            if len(display_cline) > 32:
+                display_cline = display_cline[:30] + "..."
 
             ccolor = "#E2E8F0"
             if any(kw in display_cline for kw in ("from ", "import ", "with ", " as ", "for ", "in ", "if ", "def ")):
@@ -1396,6 +1450,36 @@ class AdaptiveAnimationWidget(QWidget):
             self.scene.addItem(ctxt)
             self.static_items.append(ctxt)
             cy_code += 22
+
+        if code_file_data:
+            cy_code += 4
+            hdr_txt = QGraphicsTextItem("📝 Текст / дані з коду файла:")
+            hdr_txt.setDefaultTextColor(QColor("#ECC94B"))
+            hdr_txt.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            hdr_txt.setPos(x2 + 6, cy_code)
+            self.scene.addItem(hdr_txt)
+            self.static_items.append(hdr_txt)
+            cy_code += 20
+
+            for c_idx, c_val in enumerate(code_file_data[:8], 1):
+                num_item = QGraphicsTextItem(f"{c_idx}|")
+                num_item.setDefaultTextColor(QColor("#718096"))
+                num_item.setFont(QFont("Consolas", 8))
+                num_item.setPos(x2 + 6, cy_code)
+                self.scene.addItem(num_item)
+                self.static_items.append(num_item)
+
+                display_cval = str(c_val)
+                if len(display_cval) > 36:
+                    display_cval = display_cval[:34] + "..."
+
+                cval_item = QGraphicsTextItem(display_cval)
+                cval_item.setDefaultTextColor(QColor("#68D391"))
+                cval_item.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+                cval_item.setPos(x2 + 24, cy_code)
+                self.scene.addItem(cval_item)
+                self.static_items.append(cval_item)
+                cy_code += 20
 
         # --- БЛОК 3: Результат та остаточний зміст ---
         x3 = x2 + col_w + gap
@@ -1423,8 +1507,8 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(out_header)
 
         out_display = str(total_val)
-        if len(out_display) > 25:
-            out_display = out_display[:23] + "..."
+        if len(out_display) > 36:
+            out_display = out_display[:34] + "..."
 
         out_val = QGraphicsTextItem(out_display)
         out_val.setDefaultTextColor(QColor("#ECC94B"))
