@@ -3,6 +3,7 @@ import re
 import random
 
 from PyQt5.QtWidgets import (
+    QComboBox,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QGraphicsView, QGraphicsScene,
     QGraphicsObject, QLabel, QSlider, QGroupBox, QSplitter
@@ -435,8 +436,25 @@ class CppIterator:
 
 class CppUniversalEngine:
     def get_arrays_snapshot(self):
-        """Знімок усіх наявних масивів у системі для одночасного відображення у UI."""
-        return {k: list(v) for k, v in self.arrays.items()}
+        """Знімок усіх наявних масивів у системі (включаючи 1D, 2D, 3D та багатовимірні) для відображення у UI."""
+        res = {}
+        for k, v in self.arrays.items():
+            if isinstance(v, list):
+                if len(v) > 0 and isinstance(v[0], list):
+                    if len(v[0]) > 0 and isinstance(v[0][0], list):
+                        # 3D Масив: tensor[i][j]
+                        for i, layer in enumerate(v):
+                            for j, row in enumerate(layer):
+                                res[f"{k}[{i}][{j}]"] = list(row)
+                    else:
+                        # 2D Масив / Матриця: matrix[i]
+                        for i, row in enumerate(v):
+                            res[f"{k}[{i}]"] = list(row)
+                else:
+                    res[k] = list(v)
+            else:
+                res[k] = [v]
+        return res
 
 
     def make_step(self, desc, pair=None, search_idx=None, found_idx=None, bin_range=None, bin_mid=None, pivot_idx=None):
@@ -543,6 +561,29 @@ class CppUniversalEngine:
     - Дійсна діагностика синтаксису з виведенням попереджень та помилок обчислення
     - Підтримка всіх видів сортування, бінарного/лінійного пошуків, векторів та стандартних бібліотек C++20
     """
+    
+    @staticmethod
+    def parse_nested_array(init_str):
+        """Перетворення списку ініціалізації C++ {{1, 2}, {3, 4}} у вкладений список Python."""
+        s = init_str.strip()
+        if not s:
+            return []
+        py_str = re.sub(r'\{', '[', s)
+        py_str = re.sub(r'\}', ']', py_str)
+        try:
+            return eval(py_str, {"__builtins__": {}})
+        except Exception:
+            return []
+
+    @staticmethod
+    def create_empty_multidim(dims, fill=0):
+        """Створення порожнього багатовимірного масиву за заданими розмірностями."""
+        if not dims:
+            return fill
+        if len(dims) == 1:
+            return [fill] * dims[0]
+        return [CppUniversalEngine.create_empty_multidim(dims[1:], fill) for _ in range(dims[0])]
+
     def __init__(self):
         self.scopes = [{}]  # Стек областей видимості
         self.iterators = {}
@@ -853,7 +894,38 @@ class CppUniversalEngine:
 
         expr = re.sub(r"\*\s*\(\s*(\w+)\s*\+\s*([^)]+)\)", r"\1[\2]", expr)
 
-        # Точно підставляємо розраховані значення для a[expr] та a.at(expr)
+        # 3D Доступ: a[i][j][k]
+        def repl_3d_access(m):
+            aname = m.group(1)
+            i_str, j_str, k_str = m.group(2), m.group(3), m.group(4)
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
+                try:
+                    i = int(self.eval_expression(i_str))
+                    j = int(self.eval_expression(j_str))
+                    k = int(self.eval_expression(k_str))
+                    return str(self.arrays[aname][i][j][k])
+                except Exception:
+                    pass
+            return m.group(0)
+
+        expr = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_3d_access, expr)
+
+        # 2D Доступ: a[i][j]
+        def repl_2d_access(m):
+            aname = m.group(1)
+            i_str, j_str = m.group(2), m.group(3)
+            if aname in self.arrays and isinstance(self.arrays[aname], list):
+                try:
+                    i = int(self.eval_expression(i_str))
+                    j = int(self.eval_expression(j_str))
+                    return str(self.arrays[aname][i][j])
+                except Exception:
+                    pass
+            return m.group(0)
+
+        expr = re.sub(r"\b(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]", repl_2d_access, expr)
+
+        # 1D Доступ: a[i] або a.at(i)
         def repl_array_access(m):
             aname = m.group(1)
             raw_i = m.group(2) or m.group(3)
@@ -861,7 +933,7 @@ class CppUniversalEngine:
                 try:
                     eval_idx = int(self.eval_expression(raw_i))
                     arr_ref = self.arrays[aname]
-                    if 0 <= eval_idx < len(arr_ref):
+                    if isinstance(arr_ref, list) and 0 <= eval_idx < len(arr_ref):
                         return str(arr_ref[eval_idx])
                 except Exception:
                     pass
@@ -1386,6 +1458,74 @@ class CppUniversalEngine:
 
     def execute_statement(self, stmt, steps):
         s = " ".join(stmt.split()).strip()
+        if not s or s.startswith("cout") or s.startswith("return") or s.startswith("std::cout"):
+            return
+        if re.search(r"\b(?:std\s*::\s*)?cin\s*>>", s):
+            return
+
+        # --- 3D Присвоєння: a[i][j][k] = val ---
+        m_3d_assign = re.match(r"^(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*=\s*(.+)$", s)
+        if m_3d_assign:
+            target_name = m_3d_assign.group(1)
+            idx1 = int(self.eval_expression(m_3d_assign.group(2)))
+            idx2 = int(self.eval_expression(m_3d_assign.group(3)))
+            idx3 = int(self.eval_expression(m_3d_assign.group(4)))
+            val = self.parse_num(self.eval_expression(m_3d_assign.group(5)))
+            if target_name in self.arrays and isinstance(self.arrays[target_name], list):
+                try:
+                    old = self.arrays[target_name][idx1][idx2][idx3]
+                    self.arrays[target_name][idx1][idx2][idx3] = val
+                    steps.append((self.get_arrays_snapshot(),
+                        f"{target_name}[{idx1}][{idx2}][{idx3}] = {val} (було {old})",
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                    ))
+                except IndexError:
+                    pass
+            return
+
+        # --- 2D Присвоєння: a[i][j] = val ---
+        m_2d_assign = re.match(r"^(\w+)\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*=\s*(.+)$", s)
+        if m_2d_assign:
+            target_name = m_2d_assign.group(1)
+            idx1 = int(self.eval_expression(m_2d_assign.group(2)))
+            idx2 = int(self.eval_expression(m_2d_assign.group(3)))
+            val = self.parse_num(self.eval_expression(m_2d_assign.group(4)))
+            if target_name in self.arrays and isinstance(self.arrays[target_name], list):
+                try:
+                    old = self.arrays[target_name][idx1][idx2]
+                    self.arrays[target_name][idx1][idx2] = val
+                    steps.append((self.get_arrays_snapshot(),
+                        f"{target_name}[{idx1}][{idx2}] = {val} (було {old})",
+                        self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                        self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                    ))
+                except IndexError:
+                    pass
+            return
+
+        # --- 2D/3D Оголошення багатовимірних масивів ---
+        m_multidim_decl = re.search(r"(?:int|auto|double|float|long|short)\s+(\w+)\s*((?:\[[^\]]+\])+)", s)
+        if m_multidim_decl:
+            name = m_multidim_decl.group(1)
+            raw_dims = re.findall(r"\[([^\]]+)\]", m_multidim_decl.group(2))
+            dims = [int(self.eval_expression(d)) for d in raw_dims if d.strip()]
+            if dims and len(dims) >= 2:
+                self.main_array_name = name
+                init_vals = []
+                brace_m = re.search(r"=\s*(\{.*\})", s)
+                if brace_m:
+                    init_vals = self.parse_nested_array(brace_m.group(1))
+                if not init_vals:
+                    init_vals = self.create_empty_multidim(dims)
+                self.arrays[name] = init_vals
+                shape_str = "".join(f"[{d}]" for d in dims)
+                steps.append((self.get_arrays_snapshot(),
+                    f"Оголошено багатовимірний масив: {name}{shape_str}",
+                    self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, self.active_pair,
+                    self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
+                ))
+                return
         if not s or s.startswith("cout") or s.startswith("return") or s.startswith("std::cout"):
             return
         if re.search(r"\b(?:std\s*::\s*)?cin\s*>>", s):
@@ -2397,33 +2537,58 @@ class CodeVisualizer(QWidget):
         if not self.steps_queue:
             return
 
-        # Запуск із базовим інтервалом 400 мс та відповідним калібруванням анімації
         self.anim_widget.set_animation_speed(400)
         self.timer.start(400)
 
     def process_next_step(self):
+        if self.current_step >= len(self.steps_queue):
+            self.timer.stop()
+            return
+
         if self.current_step < len(self.steps_queue):
             step_data = self.steps_queue[self.current_step]
-            arr_state = step_data[0]
-            desc = step_data[1]
-            show_sum_avg = step_data[2] if len(step_data) > 2 else False
-            cnt_metric = step_data[3] if len(step_data) > 3 else None
-            max_indices = step_data[4] if len(step_data) > 4 else None
-            max_val = step_data[5] if len(step_data) > 5 else None
-            temp_val = step_data[6] if len(step_data) > 6 else None
-            pair_indices = step_data[7] if len(step_data) > 7 else None
-            show_capacity_size = step_data[8] if len(step_data) > 8 else False
-            cap_metric = step_data[9] if len(step_data) > 9 else None
-            sz_metric = step_data[10] if len(step_data) > 10 else None
-            search_idx = step_data[11] if len(step_data) > 11 else None
-            found_idx = step_data[12] if len(step_data) > 12 else None
-            bin_range = step_data[13] if len(step_data) > 13 else None
-            bin_mid = step_data[14] if len(step_data) > 14 else None
-            pivot_idx = step_data[15] if len(step_data) > 15 else None
-            min_val = step_data[16] if len(step_data) > 16 else None
-            min_indices = step_data[17] if len(step_data) > 17 else None
-            extra_vars = step_data[18] if len(step_data) > 18 else None
-            precision = step_data[19] if len(step_data) > 19 else 2
+            if isinstance(step_data, dict):
+                arr_state = step_data.get('arrays', {})
+                desc = step_data.get('desc', '')
+                show_sum_avg = step_data.get('show_sum_avg', True)
+                cnt_metric = step_data.get('cnt_metric')
+                max_indices = step_data.get('max_indices')
+                max_val = step_data.get('max_val')
+                temp_val = step_data.get('temp_val')
+                pair_indices = step_data.get('pair')
+                show_capacity_size = step_data.get('show_capacity_size', False)
+                cap_metric = step_data.get('cap_metric')
+                sz_metric = step_data.get('sz_metric')
+                search_idx = step_data.get('search_idx')
+                found_idx = step_data.get('found_idx')
+                bin_range = step_data.get('bin_range')
+                bin_mid = step_data.get('bin_mid')
+                pivot_idx = step_data.get('pivot_idx')
+                min_val = step_data.get('min_val')
+                min_indices = step_data.get('min_indices')
+                extra_vars = step_data.get('extra_vars')
+                precision = step_data.get('precision', 2)
+            else:
+                arr_state = step_data[0] if len(step_data) > 0 else {}
+                desc = step_data[1] if len(step_data) > 1 else ""
+                show_sum_avg = step_data[2] if len(step_data) > 2 else False
+                cnt_metric = step_data[3] if len(step_data) > 3 else None
+                max_indices = step_data[4] if len(step_data) > 4 else None
+                max_val = step_data[5] if len(step_data) > 5 else None
+                temp_val = step_data[6] if len(step_data) > 6 else None
+                pair_indices = step_data[7] if len(step_data) > 7 else None
+                show_capacity_size = step_data[8] if len(step_data) > 8 else False
+                cap_metric = step_data[9] if len(step_data) > 9 else None
+                sz_metric = step_data[10] if len(step_data) > 10 else None
+                search_idx = step_data[11] if len(step_data) > 11 else None
+                found_idx = step_data[12] if len(step_data) > 12 else None
+                bin_range = step_data[13] if len(step_data) > 13 else None
+                bin_mid = step_data[14] if len(step_data) > 14 else None
+                pivot_idx = step_data[15] if len(step_data) > 15 else None
+                min_val = step_data[16] if len(step_data) > 16 else None
+                min_indices = step_data[17] if len(step_data) > 17 else None
+                extra_vars = step_data[18] if len(step_data) > 18 else None
+                precision = step_data[19] if len(step_data) > 19 else 2
 
             self.anim_widget.update_variables(
                 arr_state, 
@@ -2448,19 +2613,11 @@ class CodeVisualizer(QWidget):
                 precision=precision
             )
             self.current_step += 1
-        else:
-            self.timer.stop()
 
 
 if __name__ == "__main__":
-    app = QApplication.instance()
-    is_jupyter = app is not None
-    if app is None:
-        app = QApplication(sys.argv)
-
+    app = QApplication(sys.argv)
     window = CodeVisualizer()
-    window.resize(1050, 700)
+    window.resize(1100, 650)
     window.show()
-
-    if not is_jupyter:
-        sys.exit(app.exec_())
+    sys.exit(app.exec_())
