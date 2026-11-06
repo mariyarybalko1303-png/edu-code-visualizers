@@ -2608,9 +2608,10 @@ class CppUniversalEngine:
                     self.active_pair = None
                 elif is_shift_step:
                     pair = [idx, min(idx + 1, len(arr) - 1)]
+                    shift_label = f"Зсув елемента праворуч: {target_name}[{idx}] = {val}" if "j" in lhs else f"Зсув елемента: {target_name}[{idx}] = {val}"
                     steps.append((
                         list(arr), 
-                        f"Зсув елемента праворуч: {target_name}[{idx}] = {val}" if "j" in lhs else f"Зсув елемента: {target_name}[{idx}] = {val}", 
+                        shift_label, 
                         self.has_sum_avg, self.condition_count, list(self.max_indices), self.current_max_val, self.temp_val, pair,
                         self.has_capacity_size, self.current_capacity, self.current_size, None, None, None, None
                     ))
