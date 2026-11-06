@@ -1215,7 +1215,7 @@ class AdaptiveAnimationWidget(QWidget):
 
     def _draw_file_pipeline(self, file_info: dict, variables: dict, cx: int, y: int):
         """Динамічна візуалізація 3-хетапного файлового пайплайну:
-        [ Блок 1: Файл (назва) ] ──▶ [ Блок 2: Зміст та дія у коді ] ──▶ [ Блок 3: Результат та остаточний зміст ]
+        [ Блок 1: Файл (назва) ] ──▶ [ Блок 2: Обробка процесів ] ──▶ [ Блок 3: Фінальний результат ]
         """
         import os
 
@@ -1241,7 +1241,7 @@ class AdaptiveAnimationWidget(QWidget):
         if not output_name:
             output_name = "вихідний_файл"
 
-        # 2. Динамічне отримання початкового вмісту файлу (Блок 1) - БЕЗ ДЕМО-ДАНИХ
+        # 2. Динамічне отримання початкового вмісту файлу (Блок 1)
         raw_lines = []
         if input_name and os.path.exists(input_name):
             try:
@@ -1270,16 +1270,16 @@ class AdaptiveAnimationWidget(QWidget):
         if not raw_lines:
             raw_lines = ["(очікування зчитання даних...)"]
 
-        # 3. Динамічне отримання дійсних ліній коду користувача (Блок 2) - БЕЗ ТЕСТОВОГО КОДУ
+        # 3. Динамічне отримання команд та процесів обробки (Блок 2)
         code_lines = file_info.get("file_code_lines", [])
         if not code_lines:
             file_var_ops = [f"{k} = {v}" for k, v in variables.items() if not k.startswith("_") and not isinstance(v, (list, dict))]
             if file_var_ops:
-                code_lines = file_var_ops[:5]
+                code_lines = file_var_ops[:6]
             else:
-                code_lines = ["# Виконання файлових операцій..."]
+                code_lines = ["# Обробка процесів коду..."]
 
-        # 4. Динамічне отримання результату обробки (Блок 3) - БЕЗ ДЕМО-ЧИСЕЛ
+        # 4. Динамічне отримання фінального результату (Блок 3)
         total_val = None
         if output_name and os.path.exists(output_name):
             try:
@@ -1291,7 +1291,7 @@ class AdaptiveAnimationWidget(QWidget):
                 pass
 
         if not total_val:
-            for res_key in ("total", "result", "output", "res", "summary", "out_text", "ans", "score", "count", "sum_val", "data"):
+            for res_key in ("total", "result", "output", "res", "summary", "out_text", "ans", "score", "count", "sum_val", "data", "report"):
                 if res_key in variables:
                     total_val = str(variables[res_key])
                     break
@@ -1305,7 +1305,7 @@ class AdaptiveAnimationWidget(QWidget):
                 total_val = "(очікування результату...)"
 
         # 5. Побудова графічної сцени PyQt6 (3 класичні блоки)
-        title = QGraphicsTextItem("📄 Візуалізація файлових операцій")
+        title = QGraphicsTextItem("📄 Візуалізація файлових операцій та процесів")
         title.setDefaultTextColor(QColor("#004085"))
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setPos(cx - title.boundingRect().width() / 2, y)
@@ -1313,21 +1313,15 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(title)
         y += 35
 
-        subtitle_text = f"[ Блок 1: Файл ({input_name}) ] ──▶ [ Блок 2: Зміст та дія у коді ] ──▶ [ Блок 3: Результат ({output_name}) ]"
-        subtitle = QGraphicsTextItem(subtitle_text)
-        subtitle.setDefaultTextColor(QColor("#2B6CB0"))
-        subtitle.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        subtitle.setPos(cx - subtitle.boundingRect().width() / 2, y)
-        self.scene.addItem(subtitle)
-        self.static_items.append(subtitle)
-        y += 35
 
         col_w = 250
         gap = 30
         start_x = cx - (3 * col_w + 2 * gap) / 2
         y_box = y + 25
 
-        # --- БЛОК 1: Файл (назва) ---
+        # ======================================================================
+        # БЛОК 1: Файл (початковий зміст)
+        # ======================================================================
         x1 = start_x
         lbl1 = QGraphicsTextItem(f"[ Блок 1: Файл ({input_name}) ]")
         lbl1.setDefaultTextColor(QColor("#1A202C"))
@@ -1336,7 +1330,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(lbl1)
         self.static_items.append(lbl1)
 
-        box1_h = max(120, min(240, len(raw_lines) * 24 + 20))
+        box1_h = max(120, min(260, len(raw_lines) * 24 + 20))
         rect1 = QGraphicsRectItem(x1, y_box, col_w, box1_h)
         rect1.setBrush(QBrush(QColor("#1E1F22")))
         rect1.setPen(QPen(QColor("#3574F0"), 2))
@@ -1377,9 +1371,11 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(hand_txt)
         self.static_items.append(hand_txt)
 
-        # --- БЛОК 2: Зміст та дія у коді ---
+        # ======================================================================
+        # БЛОК 2: Обробка процесів
+        # ======================================================================
         x2 = x1 + col_w + gap
-        lbl2 = QGraphicsTextItem("[ Блок 2: Зміст та дія у коді ]")
+        lbl2 = QGraphicsTextItem("[ Блок 2: Обробка процесів ]")
         lbl2.setDefaultTextColor(QColor("#1A202C"))
         lbl2.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lbl2.setPos(x2 + (col_w - lbl2.boundingRect().width()) / 2, y)
@@ -1391,7 +1387,7 @@ class AdaptiveAnimationWidget(QWidget):
 
         code_file_data = list(file_info.get("code_file_content", []))
 
-        # Динамічний збір сформованого тексту та записів даних зі змінних коду
+        # Динамічний збір сформованого тексту та записів процесів зі змінних коду
         extra_extracted = []
         for k, v in variables.items():
             if k.startswith("_"):
@@ -1421,7 +1417,7 @@ class AdaptiveAnimationWidget(QWidget):
             raw_lines = code_file_data
 
         extra_h = (min(8, len(code_file_data)) * 20 + 25) if code_file_data else 0
-        box2_h = max(120, min(340, len(code_lines[:7]) * 22 + 20 + extra_h))
+        box2_h = max(120, min(340, len(code_lines[:6]) * 22 + 25 + extra_h))
 
         rect2 = QGraphicsRectItem(x2, y_box, col_w, box2_h)
         rect2.setBrush(QBrush(QColor("#2B2D30")))
@@ -1430,7 +1426,15 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(rect2)
 
         cy_code = y_box + 10
-        for cline in code_lines[:7]:
+        hdr_proc = QGraphicsTextItem("⚙️ Процеси та команди коду:")
+        hdr_proc.setDefaultTextColor(QColor("#63B3ED"))
+        hdr_proc.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        hdr_proc.setPos(x2 + 6, cy_code)
+        self.scene.addItem(hdr_proc)
+        self.static_items.append(hdr_proc)
+        cy_code += 20
+
+        for cline in code_lines[:6]:
             display_cline = str(cline)
             if len(display_cline) > 32:
                 display_cline = display_cline[:30] + "..."
@@ -1453,7 +1457,7 @@ class AdaptiveAnimationWidget(QWidget):
 
         if code_file_data:
             cy_code += 4
-            hdr_txt = QGraphicsTextItem("📝 Текст / дані з коду файла:")
+            hdr_txt = QGraphicsTextItem("📊 Дані обробки у коді:")
             hdr_txt.setDefaultTextColor(QColor("#ECC94B"))
             hdr_txt.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             hdr_txt.setPos(x2 + 6, cy_code)
@@ -1481,9 +1485,24 @@ class AdaptiveAnimationWidget(QWidget):
                 self.static_items.append(cval_item)
                 cy_code += 20
 
-        # --- БЛОК 3: Результат та остаточний зміст ---
+        proc_rect = QGraphicsRectItem(x2 + 5, y_box + box2_h + 12, col_w - 10, 30)
+        proc_rect.setBrush(QBrush(QColor("#EBF8FF")))
+        proc_rect.setPen(QPen(QColor("#3182CE"), 1.6))
+        self.scene.addItem(proc_rect)
+        self.static_items.append(proc_rect)
+
+        proc_txt = QGraphicsTextItem("Обробка процесів у коді")
+        proc_txt.setDefaultTextColor(QColor("#2B6CB0"))
+        proc_txt.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        proc_txt.setPos(x2 + (col_w - proc_txt.boundingRect().width()) / 2, y_box + box2_h + 17)
+        self.scene.addItem(proc_txt)
+        self.static_items.append(proc_txt)
+
+        # ======================================================================
+        # БЛОК 3: Фінальний результат
+        # ======================================================================
         x3 = x2 + col_w + gap
-        lbl3 = QGraphicsTextItem(f"[ Блок 3: Результат ({output_name}) ]")
+        lbl3 = QGraphicsTextItem(f"[ Блок 3: Фінальний результат ({output_name}) ]")
         lbl3.setDefaultTextColor(QColor("#1A202C"))
         lbl3.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lbl3.setPos(x3 + (col_w - lbl3.boundingRect().width()) / 2, y)
@@ -1492,30 +1511,41 @@ class AdaptiveAnimationWidget(QWidget):
 
         self._draw_arrow(x2 + col_w + 5, arrow1_y, x3 - 5, arrow1_y, color="#38A169", width=2.5)
 
-        box3_h = max(80, box1_h - 20)
+        out_lines = str(total_val).splitlines() if total_val else ["(очікування результату...)"]
+        box3_h = max(120, min(280, len(out_lines[:9]) * 22 + 35))
         rect3 = QGraphicsRectItem(x3, y_box, col_w, box3_h)
         rect3.setBrush(QBrush(QColor("#1E1F22")))
         rect3.setPen(QPen(QColor("#38A169"), 2))
         self.scene.addItem(rect3)
         self.static_items.append(rect3)
 
-        out_header = QGraphicsTextItem("Остаточний зміст:")
-        out_header.setDefaultTextColor(QColor("#A0AEC0"))
+        out_header = QGraphicsTextItem("Результат:")
+        out_header.setDefaultTextColor(QColor("#ECC94B"))
         out_header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        out_header.setPos(x3 + 10, y_box + 8)
+        out_header.setPos(x3 + 8, y_box + 8)
         self.scene.addItem(out_header)
         self.static_items.append(out_header)
 
-        out_display = str(total_val)
-        if len(out_display) > 36:
-            out_display = out_display[:34] + "..."
+        out_y = y_box + 30
+        for o_idx, o_val in enumerate(out_lines[:8], 1):
+            o_num = QGraphicsTextItem(f"{o_idx}|")
+            o_num.setDefaultTextColor(QColor("#718096"))
+            o_num.setFont(QFont("Consolas", 8))
+            o_num.setPos(x3 + 8, out_y)
+            self.scene.addItem(o_num)
+            self.static_items.append(o_num)
 
-        out_val = QGraphicsTextItem(out_display)
-        out_val.setDefaultTextColor(QColor("#ECC94B"))
-        out_val.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        out_val.setPos(x3 + 10, y_box + 32)
-        self.scene.addItem(out_val)
-        self.static_items.append(out_val)
+            disp_o = str(o_val)
+            if len(disp_o) > 36:
+                disp_o = disp_o[:34] + "..."
+
+            o_txt = QGraphicsTextItem(disp_o)
+            o_txt.setDefaultTextColor(QColor("#68D391"))
+            o_txt.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+            o_txt.setPos(x3 + 28, out_y)
+            self.scene.addItem(o_txt)
+            self.static_items.append(o_txt)
+            out_y += 20
 
         out_lbl_rect = QGraphicsRectItem(x3 + 5, y_box + box3_h + 12, col_w - 10, 30)
         out_lbl_rect.setBrush(QBrush(QColor("#C6F6D5")))
@@ -1523,12 +1553,13 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(out_lbl_rect)
         self.static_items.append(out_lbl_rect)
 
-        out_lbl = QGraphicsTextItem(f"Збережено у {output_name}")
+        out_lbl = QGraphicsTextItem(f"Фінальний результат у {output_name}")
         out_lbl.setDefaultTextColor(QColor("#22543D"))
         out_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         out_lbl.setPos(x3 + (col_w - out_lbl.boundingRect().width()) / 2, y_box + box3_h + 17)
         self.scene.addItem(out_lbl)
         self.static_items.append(out_lbl)
+
 
     def update_variables(self, variables: dict, meta_info: dict):
         self._clear_static_items()
