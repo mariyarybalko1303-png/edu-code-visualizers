@@ -997,25 +997,46 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(text)
         self.static_items.append(text)
 
-    def _draw_class_card(self, x: float, y: float, w: float, cls_name: str, cls_info: dict, live_instance_attrs: dict = None, is_base: bool = False) -> float:
-        """Малює красиву UML-картку класу з назвою, властивостями (атрибутами) та методами."""
+    def _draw_class_card(self, x: float, y: float, w: float, cls_name: str, cls_info: dict, live_instance_attrs: dict = None, is_base: bool = False, parent_attrs: list = None) -> float:
+        """Малює красиву UML-картку класу з назвою, основною та додатковими властивостями та методами."""
         attrs = list(cls_info.get("attrs", [])) if cls_info else []
         methods = list(cls_info.get("methods", [])) if cls_info else []
 
-        prop_lines = []
-        if live_instance_attrs:
-            for k, v in live_instance_attrs.items():
-                val_str = str(v)
-                if len(val_str) > 16:
-                    val_str = val_str[:14] + ".."
-                prop_lines.append(f"🔹 {k} = {val_str}")
-        
-        for a in attrs:
-            if not any(a == pl.split(" ")[1] or f" {a} =" in pl for pl in prop_lines):
-                prop_lines.append(f"🔹 {a}")
+        main_props = []
+        add_props = []
 
+        if parent_attrs is not None:
+            if live_instance_attrs:
+                for k, v in live_instance_attrs.items():
+                    val_str = str(v)
+                    if len(val_str) > 16:
+                        val_str = val_str[:14] + ".."
+                    if k in parent_attrs:
+                        main_props.append(f"🔹 [основна] {k} = {val_str}")
+                    else:
+                        add_props.append(f"🔸 [додаткова] {k} = {val_str}")
+
+            for a in attrs:
+                if not any(f" {a} " in pl or pl.endswith(f" {a}") for pl in main_props + add_props):
+                    if a in parent_attrs:
+                        main_props.append(f"🔹 [основна] {a}")
+                    else:
+                        add_props.append(f"🔸 [додаткова] {a}")
+        else:
+            if live_instance_attrs:
+                for k, v in live_instance_attrs.items():
+                    val_str = str(v)
+                    if len(val_str) > 16:
+                        val_str = val_str[:14] + ".."
+                    main_props.append(f"🔹 [основна] {k} = {val_str}")
+
+            for a in attrs:
+                if not any(f" {a} " in pl or pl.endswith(f" {a}") for pl in main_props):
+                    main_props.append(f"🔹 [основна] {a}")
+
+        prop_lines = main_props + add_props
         if not prop_lines:
-            prop_lines = ["🔹 (властивості)"]
+            prop_lines = ["🔹 [основна] (властивості)"]
 
         method_lines = [f"⚙️ {m}()" for m in methods if not m.startswith("__") or m == "__init__"][:4]
 
@@ -1096,7 +1117,7 @@ class AdaptiveAnimationWidget(QWidget):
         if not roots:
             roots = ["object"]
 
-        card_w = 170
+        card_w = 210
         level_gap = 50
         rect_map = {}
 
@@ -1131,7 +1152,9 @@ class AdaptiveAnimationWidget(QWidget):
         base_info = class_details.get(base_name, {})
         base_live = live_class_attrs.get(base_name, {})
 
-        base_h = self._draw_class_card(base_x, y_lvl1, card_w, base_name, base_info, base_live, is_base=True)
+        base_parent = base_info.get("parent")
+        base_parent_attrs = class_details.get(base_parent, {}).get("attrs") if (base_parent and base_parent.lower() != "object") else None
+        base_h = self._draw_class_card(base_x, y_lvl1, card_w, base_name, base_info, base_live, is_base=True, parent_attrs=base_parent_attrs)
         rect_map[base_name] = (base_x, y_lvl1, card_w, base_h)
 
         subclasses = [cls for cls, parent in classes_dict.items() if parent == base_name or (cls != base_name and parent.lower() != "object")]
@@ -1164,7 +1187,12 @@ class AdaptiveAnimationWidget(QWidget):
 
                 sub_info = class_details.get(sub_name, {})
                 sub_live = live_class_attrs.get(sub_name, {})
-                sub_h = self._draw_class_card(sub_x, y_lvl2, card_w, sub_name, sub_info, sub_live, is_base=False)
+                sub_info = class_details.get(sub_name, {})
+                sub_live = live_class_attrs.get(sub_name, {})
+                sub_parent = sub_info.get("parent", base_name)
+                sub_parent_attrs = class_details.get(sub_parent, {}).get("attrs", []) if (sub_parent and sub_parent.lower() != "object") else base_info.get("attrs", [])
+
+                sub_h = self._draw_class_card(sub_x, y_lvl2, card_w, sub_name, sub_info, sub_live, is_base=False, parent_attrs=sub_parent_attrs)
                 rect_map[sub_name] = (sub_x, y_lvl2, card_w, sub_h)
                 if sub_h > max_sub_h:
                     max_sub_h = sub_h
