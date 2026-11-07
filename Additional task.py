@@ -997,78 +997,115 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(text)
         self.static_items.append(text)
 
-    def _draw_class_card(self, x: float, y: float, w: float, cls_name: str, cls_info: dict, live_instance_attrs: dict = None, is_base: bool = False, parent_attrs: list = None) -> float:
-        """Малює красиву UML-картку класу з назвою, основною та додатковими властивостями та методами."""
+    def _draw_class_card(self, x: float, y: float, w: float, cls_name: str, cls_info: dict, live_instance_attrs: dict = None, is_base: bool = False, is_standalone: bool = False, parent_attrs: list = None) -> float:
+        """Малює красиву UML-картку класу з назвою, властивостями (атрибутами) та методами."""
         attrs = list(cls_info.get("attrs", [])) if cls_info else []
         methods = list(cls_info.get("methods", [])) if cls_info else []
+        parent_name = cls_info.get("parent", "object") if cls_info else "object"
 
-        main_props = []
-        add_props = []
-
-        if parent_attrs is not None:
+        prop_lines = []
+        
+        if is_standalone or parent_name.lower() == "object" or not parent_attrs:
+            # Standalone or Base class
+            all_attrs = list(attrs)
             if live_instance_attrs:
-                for k, v in live_instance_attrs.items():
-                    val_str = str(v)
-                    if len(val_str) > 16:
-                        val_str = val_str[:14] + ".."
-                    if k in parent_attrs:
-                        main_props.append(f"🔹 [основна] {k} = {val_str}")
-                    else:
-                        add_props.append(f"🔸 [додаткова] {k} = {val_str}")
-
-            for a in attrs:
-                if not any(f" {a} " in pl or pl.endswith(f" {a}") for pl in main_props + add_props):
-                    if a in parent_attrs:
-                        main_props.append(f"🔹 [основна] {a}")
-                    else:
-                        add_props.append(f"🔸 [додаткова] {a}")
+                for k in live_instance_attrs.keys():
+                    if k not in all_attrs:
+                        all_attrs.append(k)
+            for a in all_attrs[:6]:
+                if live_instance_attrs and a in live_instance_attrs:
+                    val_str = str(live_instance_attrs[a])
+                    if len(val_str) > 14:
+                        val_str = val_str[:12] + ".."
+                    prop_lines.append(f"🔹 [основна] {a} = {val_str}")
+                else:
+                    prop_lines.append(f"🔹 [основна] {a}")
         else:
+            # Derived subclass
+            main_attrs = list(parent_attrs)
+            add_attrs = [a for a in attrs if a not in main_attrs]
             if live_instance_attrs:
-                for k, v in live_instance_attrs.items():
-                    val_str = str(v)
-                    if len(val_str) > 16:
-                        val_str = val_str[:14] + ".."
-                    main_props.append(f"🔹 [основна] {k} = {val_str}")
+                for k in live_instance_attrs.keys():
+                    if k not in main_attrs and k not in add_attrs:
+                        add_attrs.append(k)
 
-            for a in attrs:
-                if not any(f" {a} " in pl or pl.endswith(f" {a}") for pl in main_props):
-                    main_props.append(f"🔹 [основна] {a}")
+            for a in main_attrs[:4]:
+                if live_instance_attrs and a in live_instance_attrs:
+                    val_str = str(live_instance_attrs[a])
+                    if len(val_str) > 14:
+                        val_str = val_str[:12] + ".."
+                    prop_lines.append(f"🔹 [основна] {a} = {val_str}")
+                else:
+                    prop_lines.append(f"🔹 [основна] {a}")
 
-        prop_lines = main_props + add_props
+            for a in add_attrs[:4]:
+                if live_instance_attrs and a in live_instance_attrs:
+                    val_str = str(live_instance_attrs[a])
+                    if len(val_str) > 14:
+                        val_str = val_str[:12] + ".."
+                    prop_lines.append(f"🔸 [додаткова] {a} = {val_str}")
+                else:
+                    prop_lines.append(f"🔸 [додаткова] {a}")
+
         if not prop_lines:
-            prop_lines = ["🔹 [основна] (властивості)"]
+            prop_lines = ["🔹 (властивості)"]
 
         method_lines = [f"⚙️ {m}()" for m in methods if not m.startswith("__") or m == "__init__"][:4]
 
-        header_h = 28
+        header_h = 32 if is_standalone else 28
         props_h = len(prop_lines[:6]) * 18 + 8
         methods_h = (len(method_lines) * 18 + 8) if method_lines else 0
         total_h = header_h + props_h + methods_h
 
+        if is_standalone:
+            border_col = "#2F855A"
+            hdr_bg_col = "#F0FFF4"
+            hdr_pen_col = "#38A169"
+            title_col = "#22543D"
+        elif is_base:
+            border_col = "#2B6CB0"
+            hdr_bg_col = "#EBF8FF"
+            hdr_pen_col = "#3182CE"
+            title_col = "#2B6CB0"
+        else:
+            border_col = "#4A5568"
+            hdr_bg_col = "#EDF2F7"
+            hdr_pen_col = "#CBD5E0"
+            title_col = "#2D3748"
+
         card_rect = QGraphicsRectItem(x, y, w, total_h)
         card_rect.setBrush(QBrush(QColor("#FFFFFF")))
-        card_rect.setPen(QPen(QColor("#2B6CB0" if is_base else "#4A5568"), 1.8))
+        card_rect.setPen(QPen(QColor(border_col), 1.8))
         self.scene.addItem(card_rect)
         self.static_items.append(card_rect)
 
         hdr_rect = QGraphicsRectItem(x, y, w, header_h)
-        hdr_rect.setBrush(QBrush(QColor("#EBF8FF" if is_base else "#EDF2F7")))
-        hdr_rect.setPen(QPen(QColor("#2B6CB0" if is_base else "#CBD5E0"), 1.2))
+        hdr_rect.setBrush(QBrush(QColor(hdr_bg_col)))
+        hdr_rect.setPen(QPen(QColor(hdr_pen_col), 1.2))
         self.scene.addItem(hdr_rect)
         self.static_items.append(hdr_rect)
 
-        t_title = QGraphicsTextItem(cls_name)
-        t_title.setDefaultTextColor(QColor("#2B6CB0" if is_base else "#2D3748"))
-        t_title.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        t_title.setPos(x + (w - t_title.boundingRect().width()) / 2, y + 3)
+        if is_standalone:
+            title_str = f"Class {cls_name} (окремий)"
+        elif parent_name and parent_name.lower() != "object":
+            title_str = f"Class {cls_name} : {parent_name}"
+        else:
+            title_str = f"Class {cls_name}" if cls_name.lower() != "object" else "Object"
+
+        t_title = QGraphicsTextItem(title_str)
+        t_title.setDefaultTextColor(QColor(title_col))
+        t_title.setFont(QFont("Consolas", 10 if is_standalone else 11, QFont.Weight.Bold))
+        t_title.setPos(x + (w - t_title.boundingRect().width()) / 2, y + 4)
         self.scene.addItem(t_title)
         self.static_items.append(t_title)
 
         curr_y = y + header_h + 4
 
         for pl in prop_lines[:6]:
+            if len(pl) > 32:
+                pl = pl[:30] + "..."
             t_prop = QGraphicsTextItem(pl)
-            t_prop.setDefaultTextColor(QColor("#2C5282"))
+            t_prop.setDefaultTextColor(QColor("#22543D" if is_standalone else "#2C5282"))
             t_prop.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
             t_prop.setPos(x + 6, curr_y)
             self.scene.addItem(t_prop)
@@ -1109,93 +1146,148 @@ class AdaptiveAnimationWidget(QWidget):
                             if not attr_k.startswith("_"):
                                 live_class_attrs[c_type][attr_k] = attr_v
 
-        tree = {}
-        for child, parent in classes_dict.items():
-            tree.setdefault(parent, []).append(child)
+        known_classes = set(classes_dict.keys())
+        parents = set()
+        children = set()
+        for cls, parent in classes_dict.items():
+            if parent in known_classes:
+                parents.add(parent)
+                children.add(cls)
 
-        roots = [p for p in tree.keys() if p not in classes_dict or classes_dict[p] == "object"]
-        if not roots:
-            roots = ["object"]
+        hierarchy_classes = list(parents.union(children))
+        standalone_classes = [c for c in known_classes if c not in hierarchy_classes]
 
+        rect_map = {}
         card_w = 210
         level_gap = 50
-        rect_map = {}
 
-        root_name = "Object"
-        obj_w, obj_h = 130, 34
-        obj_x = cx - obj_w / 2
-        obj_rect = QGraphicsRectItem(obj_x, start_y, obj_w, obj_h)
-        obj_rect.setBrush(QBrush(QColor("#FFFFFF")))
-        obj_rect.setPen(QPen(QColor("#718096"), 1.8))
-        self.scene.addItem(obj_rect)
-        self.static_items.append(obj_rect)
-        rect_map["object"] = (obj_x, start_y, obj_w, obj_h)
-        rect_map["Object"] = (obj_x, start_y, obj_w, obj_h)
+        if hierarchy_classes and standalone_classes:
+            cx_hier = cx - 130
+            cx_stand = cx + 160
+        else:
+            cx_hier = cx
+            cx_stand = cx
 
-        t_obj = QGraphicsTextItem(root_name)
-        t_obj.setDefaultTextColor(QColor("#2D3748"))
-        t_obj.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
-        t_obj.setPos(obj_x + (obj_w - t_obj.boundingRect().width()) / 2, start_y + 5)
-        self.scene.addItem(t_obj)
-        self.static_items.append(t_obj)
+        max_y_reached = start_y
 
-        user_bases = [cls for cls in classes_dict.keys() if classes_dict[cls].lower() == "object" or cls in roots]
-        if not user_bases:
-            user_bases = list(classes_dict.keys())[:1]
+        # Draw Hierarchy if present
+        if hierarchy_classes:
+            tree = {}
+            for child, parent in classes_dict.items():
+                if child in hierarchy_classes:
+                    tree.setdefault(parent, []).append(child)
 
-        y_lvl1 = start_y + obj_h + level_gap
-        l1 = self.scene.addLine(cx, start_y + obj_h, cx, y_lvl1, QPen(QColor("#4A5568"), 1.8))
-        self.static_items.append(l1)
+            roots = [p for p in tree.keys() if p not in classes_dict or classes_dict[p] == "object"]
+            if not roots:
+                roots = ["object"]
 
-        base_name = user_bases[0] if user_bases else "Animal"
-        base_x = cx - card_w / 2
-        base_info = class_details.get(base_name, {})
-        base_live = live_class_attrs.get(base_name, {})
+            root_name = "Object"
+            obj_w, obj_h = 130, 34
+            obj_x = cx_hier - obj_w / 2
+            obj_rect = QGraphicsRectItem(obj_x, start_y, obj_w, obj_h)
+            obj_rect.setBrush(QBrush(QColor("#FFFFFF")))
+            obj_rect.setPen(QPen(QColor("#718096"), 1.8))
+            self.scene.addItem(obj_rect)
+            self.static_items.append(obj_rect)
+            rect_map["object"] = (obj_x, start_y, obj_w, obj_h)
+            rect_map["Object"] = (obj_x, start_y, obj_w, obj_h)
 
-        base_parent = base_info.get("parent")
-        base_parent_attrs = class_details.get(base_parent, {}).get("attrs") if (base_parent and base_parent.lower() != "object") else None
-        base_h = self._draw_class_card(base_x, y_lvl1, card_w, base_name, base_info, base_live, is_base=True, parent_attrs=base_parent_attrs)
-        rect_map[base_name] = (base_x, y_lvl1, card_w, base_h)
+            t_obj = QGraphicsTextItem(root_name)
+            t_obj.setDefaultTextColor(QColor("#2D3748"))
+            t_obj.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+            t_obj.setPos(obj_x + (obj_w - t_obj.boundingRect().width()) / 2, start_y + 5)
+            self.scene.addItem(t_obj)
+            self.static_items.append(t_obj)
 
-        subclasses = [cls for cls, parent in classes_dict.items() if parent == base_name or (cls != base_name and parent.lower() != "object")]
-        if not subclasses:
-            subclasses = [cls for cls in classes_dict.keys() if cls != base_name]
+            user_bases = [cls for cls in hierarchy_classes if classes_dict[cls].lower() == "object" or cls in roots]
+            if not user_bases:
+                user_bases = [hierarchy_classes[0]]
 
-        max_sub_h = 50
-        y_lvl2 = y_lvl1 + base_h + level_gap
-        if subclasses:
-            num_subs = len(subclasses)
-            gap = 30
-            total_w = num_subs * card_w + (num_subs - 1) * gap
-            start_sub_x = cx - total_w / 2
+            y_lvl1 = start_y + obj_h + level_gap
+            l1 = self.scene.addLine(cx_hier, start_y + obj_h, cx_hier, y_lvl1, QPen(QColor("#4A5568"), 1.8))
+            self.static_items.append(l1)
 
-            branch_y = y_lvl1 + base_h + level_gap / 2
-            l2 = self.scene.addLine(cx, y_lvl1 + base_h, cx, branch_y, QPen(QColor("#4A5568"), 1.8))
-            self.static_items.append(l2)
+            base_name = user_bases[0]
+            base_x = cx_hier - card_w / 2
+            base_info = class_details.get(base_name, {})
+            base_live = live_class_attrs.get(base_name, {})
+            base_parent = base_info.get("parent")
+            base_parent_attrs = class_details.get(base_parent, {}).get("attrs") if (base_parent and base_parent.lower() != "object") else None
 
-            first_cx = start_sub_x + card_w / 2
-            last_cx = start_sub_x + (num_subs - 1) * (card_w + gap) + card_w / 2
-            l3 = self.scene.addLine(first_cx, branch_y, last_cx, branch_y, QPen(QColor("#4A5568"), 1.8))
-            self.static_items.append(l3)
+            base_h = self._draw_class_card(base_x, y_lvl1, card_w, base_name, base_info, base_live, is_base=True, parent_attrs=base_parent_attrs)
+            rect_map[base_name] = (base_x, y_lvl1, card_w, base_h)
 
-            for i, sub_name in enumerate(subclasses):
-                sub_cx = start_sub_x + i * (card_w + gap) + card_w / 2
-                sub_x = sub_cx - card_w / 2
+            subclasses = [cls for cls in hierarchy_classes if classes_dict.get(cls) == base_name or (cls != base_name and classes_dict.get(cls, "").lower() != "object")]
 
-                l_sub = self.scene.addLine(sub_cx, branch_y, sub_cx, y_lvl2, QPen(QColor("#4A5568"), 1.8))
-                self.static_items.append(l_sub)
+            y_lvl2 = y_lvl1 + base_h + level_gap
+            max_y_reached = max(max_y_reached, y_lvl2)
 
-                sub_info = class_details.get(sub_name, {})
-                sub_live = live_class_attrs.get(sub_name, {})
-                sub_info = class_details.get(sub_name, {})
-                sub_live = live_class_attrs.get(sub_name, {})
-                sub_parent = sub_info.get("parent", base_name)
-                sub_parent_attrs = class_details.get(sub_parent, {}).get("attrs", []) if (sub_parent and sub_parent.lower() != "object") else base_info.get("attrs", [])
+            if subclasses:
+                num_subs = len(subclasses)
+                gap = 25
+                total_w = num_subs * card_w + (num_subs - 1) * gap
+                start_sub_x = cx_hier - total_w / 2
 
-                sub_h = self._draw_class_card(sub_x, y_lvl2, card_w, sub_name, sub_info, sub_live, is_base=False, parent_attrs=sub_parent_attrs)
-                rect_map[sub_name] = (sub_x, y_lvl2, card_w, sub_h)
-                if sub_h > max_sub_h:
-                    max_sub_h = sub_h
+                branch_y = y_lvl1 + base_h + level_gap / 2
+                l2 = self.scene.addLine(cx_hier, y_lvl1 + base_h, cx_hier, branch_y, QPen(QColor("#4A5568"), 1.8))
+                self.static_items.append(l2)
+
+                first_cx = start_sub_x + card_w / 2
+                last_cx = start_sub_x + (num_subs - 1) * (card_w + gap) + card_w / 2
+                l3 = self.scene.addLine(first_cx, branch_y, last_cx, branch_y, QPen(QColor("#4A5568"), 1.8))
+                self.static_items.append(l3)
+
+                for i, sub_name in enumerate(subclasses):
+                    sub_cx = start_sub_x + i * (card_w + gap) + card_w / 2
+                    sub_x = sub_cx - card_w / 2
+
+                    l_sub = self.scene.addLine(sub_cx, branch_y, sub_cx, y_lvl2, QPen(QColor("#4A5568"), 1.8))
+                    self.static_items.append(l_sub)
+
+                    sub_info = class_details.get(sub_name, {})
+                    sub_live = live_class_attrs.get(sub_name, {})
+                    sub_parent = sub_info.get("parent", base_name)
+                    sub_parent_attrs = class_details.get(sub_parent, {}).get("attrs", []) if (sub_parent and sub_parent.lower() != "object") else base_info.get("attrs", [])
+
+                    sub_h = self._draw_class_card(sub_x, y_lvl2, card_w, sub_name, sub_info, sub_live, is_base=False, parent_attrs=sub_parent_attrs)
+                    rect_map[sub_name] = (sub_x, y_lvl2, card_w, sub_h)
+                    max_y_reached = max(max_y_reached, y_lvl2 + sub_h)
+
+        # Draw Standalone Classes if present
+        if standalone_classes:
+            stand_y = start_y
+            if not hierarchy_classes:
+                root_name = "Object"
+                obj_w, obj_h = 130, 34
+                obj_x = cx_stand - obj_w / 2
+                obj_rect = QGraphicsRectItem(obj_x, start_y, obj_w, obj_h)
+                obj_rect.setBrush(QBrush(QColor("#FFFFFF")))
+                obj_rect.setPen(QPen(QColor("#718096"), 1.8))
+                self.scene.addItem(obj_rect)
+                self.static_items.append(obj_rect)
+
+                t_obj = QGraphicsTextItem(root_name)
+                t_obj.setDefaultTextColor(QColor("#2D3748"))
+                t_obj.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+                t_obj.setPos(obj_x + (obj_w - t_obj.boundingRect().width()) / 2, start_y + 5)
+                self.scene.addItem(t_obj)
+                self.static_items.append(t_obj)
+
+                stand_y = start_y + obj_h + level_gap
+
+            for i, st_name in enumerate(standalone_classes):
+                st_x = cx_stand - card_w / 2
+                st_info = class_details.get(st_name, {})
+                st_live = live_class_attrs.get(st_name, {})
+
+                if not hierarchy_classes:
+                    l_st = self.scene.addLine(cx_stand, start_y + obj_h, cx_stand, stand_y, QPen(QColor("#A0AEC0"), 1.5, Qt.PenStyle.DashLine))
+                    self.static_items.append(l_st)
+
+                st_h = self._draw_class_card(st_x, stand_y, card_w, st_name, st_info, st_live, is_standalone=True)
+                rect_map[st_name] = (st_x, stand_y, card_w, st_h)
+                max_y_reached = max(max_y_reached, stand_y + st_h)
+                stand_y += st_h + 30
 
         for rel in relations:
             src = rel.get("from")
@@ -1203,32 +1295,45 @@ class AdaptiveAnimationWidget(QWidget):
             if src in rect_map and dst in rect_map:
                 self._draw_aggregation_between_rects(rect_map[src], rect_map[dst], color="#DD6B20", width=2)
 
-        leg_y = (y_lvl2 if subclasses else y_lvl1) + (max_sub_h if subclasses else base_h) + 30
-        leg_rect = QGraphicsRectItem(cx - 180, leg_y, 360, 40)
+        leg_y = max_y_reached + 35
+        leg_rect = QGraphicsRectItem(cx - 230, leg_y, 460, 40)
         leg_rect.setBrush(QBrush(QColor("#F7FAFC")))
         leg_rect.setPen(QPen(QColor("#CBD5E0"), 1))
         self.scene.addItem(leg_rect)
         self.static_items.append(leg_rect)
 
-        l_leg = self.scene.addLine(cx - 165, leg_y + 20, cx - 130, leg_y + 20, QPen(QColor("#000000"), 1.8))
+        l_leg = self.scene.addLine(cx - 215, leg_y + 20, cx - 180, leg_y + 20, QPen(QColor("#4A5568"), 1.8))
         self.static_items.append(l_leg)
         t_leg1 = QGraphicsTextItem("Успадкування (is-a)")
         t_leg1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        t_leg1.setDefaultTextColor(QColor("#000000"))
-        t_leg1.setPos(cx - 125, leg_y + 11)
+        t_leg1.setDefaultTextColor(QColor("#2D3748"))
+        t_leg1.setPos(cx - 175, leg_y + 11)
         self.scene.addItem(t_leg1)
         self.static_items.append(t_leg1)
 
-        sample_r1 = (cx + 10, leg_y + 12, 16, 16)
-        sample_r2 = (cx + 45, leg_y + 12, 16, 16)
+        sample_r1 = (cx - 40, leg_y + 12, 16, 16)
+        sample_r2 = (cx - 5, leg_y + 12, 16, 16)
         self._draw_aggregation_between_rects(sample_r1, sample_r2, color="#DD6B20", width=2)
 
         t_leg2 = QGraphicsTextItem("Агрегація (has-a)")
         t_leg2.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         t_leg2.setDefaultTextColor(QColor("#DD6B20"))
-        t_leg2.setPos(cx + 65, leg_y + 11)
+        t_leg2.setPos(cx + 15, leg_y + 11)
         self.scene.addItem(t_leg2)
         self.static_items.append(t_leg2)
+
+        leg_st_rect = QGraphicsRectItem(cx + 125, leg_y + 12, 16, 16)
+        leg_st_rect.setBrush(QBrush(QColor("#F0FFF4")))
+        leg_st_rect.setPen(QPen(QColor("#2F855A"), 1.5))
+        self.scene.addItem(leg_st_rect)
+        self.static_items.append(leg_st_rect)
+
+        t_leg3 = QGraphicsTextItem("Окремий клас")
+        t_leg3.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        t_leg3.setDefaultTextColor(QColor("#22543D"))
+        t_leg3.setPos(cx + 145, leg_y + 11)
+        self.scene.addItem(t_leg3)
+        self.static_items.append(t_leg3)
 
     def _sync_array_blocks(self, array_name: str, new_values: list, cx: int, y: int, highlighted_indices: dict):
         arr_len = len(new_values)
