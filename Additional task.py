@@ -1454,7 +1454,7 @@ class AdaptiveAnimationWidget(QWidget):
 
     def _draw_file_pipeline(self, file_info: dict, variables: dict, cx: int, y: int):
         """Динамічна візуалізація 3-хетапного файлового пайплайну:
-        [ Блок 1: Файл (назва) ] ──▶ [ Блок 2: Обробка процесів ] ──▶ [ Блок 3: Фінальний результат ]
+        [ Блок 1: Що було на диску ] ──▶ [ Блок 2: Як це змінив код ] ──▶ [ Блок 3: Що записується назад у файл ]
         """
         import os
 
@@ -1552,14 +1552,6 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(title)
         y += 35
 
-        subtitle_text = f"[ Блок 1: Файл ({input_name}) ] ──▶ [ Блок 2: Обробка процесів ] ──▶ [ Блок 3: Фінальний результат ({output_name}) ]"
-        subtitle = QGraphicsTextItem(subtitle_text)
-        subtitle.setDefaultTextColor(QColor("#2B6CB0"))
-        subtitle.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        subtitle.setPos(cx - subtitle.boundingRect().width() / 2, y)
-        self.scene.addItem(subtitle)
-        self.static_items.append(subtitle)
-        y += 35
 
         col_w = 250
         gap = 30
@@ -1570,7 +1562,7 @@ class AdaptiveAnimationWidget(QWidget):
         # БЛОК 1: Файл (початковий зміст)
         # ======================================================================
         x1 = start_x
-        lbl1 = QGraphicsTextItem(f"[ Блок 1: Файл ({input_name}) ]")
+        lbl1 = QGraphicsTextItem(f"[ Блок 1: Що було у файлі ({input_name}) ]")
         lbl1.setDefaultTextColor(QColor("#1A202C"))
         lbl1.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lbl1.setPos(x1 + (col_w - lbl1.boundingRect().width()) / 2, y)
@@ -1611,7 +1603,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(hand_rect)
         self.static_items.append(hand_rect)
 
-        hand_txt = QGraphicsTextItem(f"Початковий зміст {input_name}")
+        hand_txt = QGraphicsTextItem(f"Що було на диску ({input_name})")
         hand_txt.setDefaultTextColor(QColor("#744210"))
         hand_txt.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         hand_txt.setPos(x1 + (col_w - hand_txt.boundingRect().width()) / 2, y_box + box1_h + 17)
@@ -1622,7 +1614,7 @@ class AdaptiveAnimationWidget(QWidget):
         # БЛОК 2: Обробка процесів
         # ======================================================================
         x2 = x1 + col_w + gap
-        lbl2 = QGraphicsTextItem("[ Блок 2: Обробка процесів ]")
+        lbl2 = QGraphicsTextItem("[ Блок 2: Як це змінив код ]")
         lbl2.setDefaultTextColor(QColor("#1A202C"))
         lbl2.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lbl2.setPos(x2 + (col_w - lbl2.boundingRect().width()) / 2, y)
@@ -1673,7 +1665,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(rect2)
 
         cy_code = y_box + 10
-        hdr_proc = QGraphicsTextItem("⚙️ Процеси та команди коду:")
+        hdr_proc = QGraphicsTextItem("⚙️ Як код змінює дані (команди):")
         hdr_proc.setDefaultTextColor(QColor("#63B3ED"))
         hdr_proc.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         hdr_proc.setPos(x2 + 6, cy_code)
@@ -1738,7 +1730,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(proc_rect)
         self.static_items.append(proc_rect)
 
-        proc_txt = QGraphicsTextItem("Обробка процесів у коді")
+        proc_txt = QGraphicsTextItem("Як це змінив код")
         proc_txt.setDefaultTextColor(QColor("#2B6CB0"))
         proc_txt.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         proc_txt.setPos(x2 + (col_w - proc_txt.boundingRect().width()) / 2, y_box + box2_h + 17)
@@ -1749,7 +1741,7 @@ class AdaptiveAnimationWidget(QWidget):
         # БЛОК 3: Фінальний результат
         # ======================================================================
         x3 = x2 + col_w + gap
-        lbl3 = QGraphicsTextItem(f"[ Блок 3: Фінальний результат ({output_name}) ]")
+        lbl3 = QGraphicsTextItem(f"[ Блок 3: Що записується назад у файл ({output_name}) ]")
         lbl3.setDefaultTextColor(QColor("#1A202C"))
         lbl3.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         lbl3.setPos(x3 + (col_w - lbl3.boundingRect().width()) / 2, y)
@@ -1766,7 +1758,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(rect3)
         self.static_items.append(rect3)
 
-        out_header = QGraphicsTextItem("🏁 Фінальний результат:")
+        out_header = QGraphicsTextItem("💾 Що записується назад у файл:")
         out_header.setDefaultTextColor(QColor("#ECC94B"))
         out_header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         out_header.setPos(x3 + 8, y_box + 8)
@@ -1800,7 +1792,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(out_lbl_rect)
         self.static_items.append(out_lbl_rect)
 
-        out_lbl = QGraphicsTextItem(f"Фінальний результат у {output_name}")
+        out_lbl = QGraphicsTextItem(f"Запис назад у {output_name}")
         out_lbl.setDefaultTextColor(QColor("#22543D"))
         out_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         out_lbl.setPos(x3 + (col_w - out_lbl.boundingRect().width()) / 2, y_box + box3_h + 17)
