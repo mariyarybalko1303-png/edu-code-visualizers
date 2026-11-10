@@ -491,13 +491,29 @@ class CodeRunner(QThread):
                 test_str = ast.unparse(node.test) if hasattr(ast, "unparse") else "cond"
                 body_strs = [ast.unparse(s) for s in node.body] if hasattr(ast, "unparse") else [str(s) for s in node.body]
                 orelse_strs = [ast.unparse(s) for s in node.orelse] if node.orelse and hasattr(ast, "unparse") else []
+
+                is_while_true = test_str.strip() in ("True", "1", "True == True")
+                has_break = any(isinstance(n, ast.Break) for n in ast.walk(node))
+                has_continue = any(isinstance(n, ast.Continue) for n in ast.walk(node))
+
+                break_cond = None
+                continue_cond = None
+                for sub_if in [n for n in ast.walk(node) if isinstance(n, ast.If)]:
+                    if any(isinstance(b, ast.Break) for b in sub_if.body):
+                        break_cond = ast.unparse(sub_if.test) if hasattr(ast, "unparse") else "break_cond"
+                    if any(isinstance(c, ast.Continue) for c in sub_if.body):
+                        continue_cond = ast.unparse(sub_if.test) if hasattr(ast, "unparse") else "continue_cond"
+
                 self.meta_info["loops"].append({
                     "type": "while",
                     "test": test_str,
                     "body": body_strs,
                     "orelse": orelse_strs,
-                    "has_break": any(isinstance(n, ast.Break) for n in ast.walk(node)),
-                    "has_continue": any(isinstance(n, ast.Continue) for n in ast.walk(node))
+                    "is_while_true": is_while_true,
+                    "has_break": has_break,
+                    "has_continue": has_continue,
+                    "break_cond": break_cond,
+                    "continue_cond": continue_cond
                 })
             elif isinstance(node, ast.For):
                 self.meta_info["has_loops"] = True
@@ -505,6 +521,13 @@ class CodeRunner(QThread):
                 iter_str = ast.unparse(node.iter) if hasattr(ast, "unparse") else "seq"
                 body_strs = [ast.unparse(s) for s in node.body] if hasattr(ast, "unparse") else [str(s) for s in node.body]
                 orelse_strs = [ast.unparse(s) for s in node.orelse] if node.orelse and hasattr(ast, "unparse") else []
+
+                is_range = False
+                range_args = []
+                if isinstance(node.iter, ast.Call) and getattr(node.iter.func, 'id', '') == 'range':
+                    is_range = True
+                    range_args = [ast.unparse(a) if hasattr(ast, "unparse") else str(a) for a in node.iter.args]
+
                 self.meta_info["loops"].append({
                     "type": "for",
                     "target": target_str,
@@ -512,6 +535,8 @@ class CodeRunner(QThread):
                     "test": f"{target_str} in {iter_str}",
                     "body": body_strs,
                     "orelse": orelse_strs,
+                    "is_range": is_range,
+                    "range_args": range_args,
                     "has_break": any(isinstance(n, ast.Break) for n in ast.walk(node)),
                     "has_continue": any(isinstance(n, ast.Continue) for n in ast.walk(node))
                 })
@@ -524,19 +549,38 @@ class CodeRunner(QThread):
                 if not is_sub_elif:
                     chain = []
                     curr = node
+                    has_nested = False
                     while isinstance(curr, ast.If):
                         test_str = ast.unparse(curr.test) if hasattr(ast, "unparse") else "cond"
                         body_strs = [ast.unparse(s) for s in curr.body] if hasattr(ast, "unparse") else [str(s) for s in curr.body]
-                        chain.append({"type": "if_elif", "test": test_str, "body": body_strs})
+
+                        nested_body_ifs = [n for n in curr.body if isinstance(n, ast.If)]
+                        if nested_body_ifs:
+                            has_nested = True
+                            nested_info = []
+                            for n_if in nested_body_ifs:
+                                n_test = ast.unparse(n_if.test) if hasattr(ast, "unparse") else "inner_cond"
+                                n_body = [ast.unparse(s) for s in n_if.body] if hasattr(ast, "unparse") else [str(s) for s in n_if.body]
+                                n_else = [ast.unparse(s) for s in n_if.orelse] if n_if.orelse and hasattr(ast, "unparse") else []
+                                nested_info.append({"test": n_test, "body": n_body, "else": n_else})
+                            chain.append({"type": "if_elif", "test": test_str, "body": body_strs, "nested": nested_info})
+                        else:
+                            chain.append({"type": "if_elif", "test": test_str, "body": body_strs})
+
                         if len(curr.orelse) == 1 and isinstance(curr.orelse[0], ast.If):
                             curr = curr.orelse[0]
                         else:
                             if curr.orelse:
                                 else_strs = [ast.unparse(s) for s in curr.orelse] if hasattr(ast, "unparse") else [str(s) for s in curr.orelse]
+                                nested_else_ifs = [n for n in curr.orelse if isinstance(n, ast.If)]
+                                if nested_else_ifs:
+                                    has_nested = True
                                 chain.append({"type": "else", "test": "else", "body": else_strs})
                             break
                     if chain:
                         self.meta_info["has_conditionals"] = True
+                        if has_nested:
+                            self.meta_info["has_nested_conditionals"] = True
                         self.meta_info["conditionals"].append(chain)
             elif isinstance(node, ast.Call):
                 func_name = ""
@@ -1931,30 +1975,32 @@ class AdaptiveAnimationWidget(QWidget):
             box_y = cd_y + 40
             box_data.append((box_x, box_y, b, i == active_idx, False))
 
-            l_tak = self.scene.addLine(cd_x - d_w / 2, cd_y, left_turn_x, cd_y, QPen(QColor("#2F855A" if is_diamond_active else "#4A5568"), 1.8))
+            # Гілка ТАК (зелена)
+            l_tak = self.scene.addLine(cd_x - d_w / 2, cd_y, left_turn_x, cd_y, QPen(QColor("#2F855A"), 1.8))
             self.static_items.append(l_tak)
 
-            self._draw_arrow(left_turn_x, cd_y, left_turn_x, box_y, color="#2F855A" if is_diamond_active else "#4A5568", width=1.8)
+            self._draw_arrow(left_turn_x, cd_y, left_turn_x, box_y, color="#2F855A", width=1.8)
 
             lbl_tak = QGraphicsTextItem("так")
-            lbl_tak.setDefaultTextColor(QColor("#276749" if is_diamond_active else "#2D3748"))
+            lbl_tak.setDefaultTextColor(QColor("#276749"))
             lbl_tak.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             tak_mid_x = (cd_x - d_w / 2 + left_turn_x) / 2
             lbl_tak.setPos(tak_mid_x - lbl_tak.boundingRect().width() / 2, cd_y - 20)
             self.scene.addItem(lbl_tak)
             self.static_items.append(lbl_tak)
 
+            # Гілка НІ (червона)
             if i < num_if - 1:
                 next_cd_x = start_d_x + (i + 1) * dx
                 next_cd_y = start_d_y + (i + 1) * dy
 
-                l_ni = self.scene.addLine(cd_x + d_w / 2, cd_y, next_cd_x, cd_y, QPen(QColor("#C53030" if not is_diamond_active and i < active_idx else "#4A5568"), 1.8))
+                l_ni = self.scene.addLine(cd_x + d_w / 2, cd_y, next_cd_x, cd_y, QPen(QColor("#C53030"), 1.8))
                 self.static_items.append(l_ni)
 
-                self._draw_arrow(next_cd_x, cd_y, next_cd_x, next_cd_y - d_h / 2, color="#C53030" if not is_diamond_active and i < active_idx else "#4A5568", width=1.8)
+                self._draw_arrow(next_cd_x, cd_y, next_cd_x, next_cd_y - d_h / 2, color="#C53030", width=1.8)
 
                 lbl_ni = QGraphicsTextItem("ні")
-                lbl_ni.setDefaultTextColor(QColor("#9B2C2C" if not is_diamond_active and i < active_idx else "#2D3748"))
+                lbl_ni.setDefaultTextColor(QColor("#C53030"))
                 lbl_ni.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
                 ni_mid_x = (cd_x + d_w / 2 + next_cd_x) / 2
                 lbl_ni.setPos(ni_mid_x - lbl_ni.boundingRect().width() / 2, cd_y - 20)
@@ -1968,13 +2014,13 @@ class AdaptiveAnimationWidget(QWidget):
                     is_else_active = (active_idx == num_if)
                     box_data.append((else_box_x, else_box_y, else_branch, is_else_active, True))
 
-                    l_ni = self.scene.addLine(cd_x + d_w / 2, cd_y, right_turn_x, cd_y, QPen(QColor("#2F855A" if is_else_active else "#4A5568"), 1.8))
+                    l_ni = self.scene.addLine(cd_x + d_w / 2, cd_y, right_turn_x, cd_y, QPen(QColor("#C53030"), 1.8))
                     self.static_items.append(l_ni)
 
-                    self._draw_arrow(right_turn_x, cd_y, right_turn_x, else_box_y, color="#2F855A" if is_else_active else "#4A5568", width=1.8)
+                    self._draw_arrow(right_turn_x, cd_y, right_turn_x, else_box_y, color="#C53030", width=1.8)
 
                     lbl_ni = QGraphicsTextItem("ні")
-                    lbl_ni.setDefaultTextColor(QColor("#276749" if is_else_active else "#2D3748"))
+                    lbl_ni.setDefaultTextColor(QColor("#C53030"))
                     lbl_ni.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
                     ni_mid_x = (cd_x + d_w / 2 + right_turn_x) / 2
                     lbl_ni.setPos(ni_mid_x - lbl_ni.boundingRect().width() / 2, cd_y - 20)
@@ -1994,7 +2040,8 @@ class AdaptiveAnimationWidget(QWidget):
             if len(b_text) > 22:
                 b_text = b_text[:20] + "..."
 
-            display_str = "else:\n" + b_text if is_else else b_text
+            prefix_str = "else:\n" if is_else else ""
+            display_str = prefix_str + b_text
             t_b = QGraphicsTextItem(display_str)
             t_b.setDefaultTextColor(QColor("#22543D" if is_act else "#1A202C"))
             t_b.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
@@ -2043,8 +2090,8 @@ class AdaptiveAnimationWidget(QWidget):
                 curr_m_y = next_m_y
 
     def _draw_loop_flowchart(self, loop_info: dict, variables: dict, cx: int, y: int):
-        """Побудова діаграми циклу (for / while) у реальному часі."""
-        title = QGraphicsTextItem(f"🔄 Архітектура циклу ({loop_info.get('type', 'loop')})")
+        """Блок-схема 1: Загальний цикл for по колекції."""
+        title = QGraphicsTextItem(f"🔄 Блок-схема: Цикл for (по колекції)")
         title.setDefaultTextColor(QColor("#004085"))
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         title.setPos(cx - title.boundingRect().width() / 2, y)
@@ -2054,9 +2101,9 @@ class AdaptiveAnimationWidget(QWidget):
 
         loop_var = loop_info.get("target", "i")
         loop_val = variables.get(loop_var, 0)
-        test_expr = loop_info.get("test", "умова")
+        test_expr = loop_info.get("test", f"{loop_var} in колекція")
 
-        # Блок ініціалізації / стану
+        # 1. Блок ініціалізації / початку
         b1_w, b1_h = 200, 42
         b1_x = cx - b1_w / 2
         rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
@@ -2065,7 +2112,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(rect1)
         self.static_items.append(rect1)
 
-        t1 = QGraphicsTextItem(f"Поточний стан: {loop_var} = {loop_val}")
+        t1 = QGraphicsTextItem(f"Початок: for {loop_var} in seq")
         t1.setDefaultTextColor(QColor("#000000"))
         t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
         t1.setPos(b1_x + 12, y + 10)
@@ -2075,41 +2122,67 @@ class AdaptiveAnimationWidget(QWidget):
         self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
         y += b1_h + 30
 
-        # Ромб умови циклу
+        # 2. Ромб умови циклу
+        d_cy = y + 35
         d_w, d_h = 160, 64
-        self._draw_diamond(cx, y + d_h / 2, d_w, d_h, f"{test_expr}?")
-        y += d_h + 30
+        self._draw_diamond(cx, d_cy, d_w, d_h, f"{test_expr}?")
 
-        # Тіло циклу
+        # Гілка ТАК (донизу): зелений
+        lbl_yes = QGraphicsTextItem("Так (True)")
+        lbl_yes.setDefaultTextColor(QColor("#276749"))
+        lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_yes.setPos(cx + 6, d_cy + d_h / 2 + 4)
+        self.scene.addItem(lbl_yes)
+        self.static_items.append(lbl_yes)
+
+        # Гілка НІ (праворуч вихід): червоний
+        lbl_no = QGraphicsTextItem("Ні (False)")
+        lbl_no.setDefaultTextColor(QColor("#C53030"))
+        lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_no.setPos(cx + d_w / 2 + 8, d_cy - 24)
+        self.scene.addItem(lbl_no)
+        self.static_items.append(lbl_no)
+
+        exit_x = cx + d_w / 2 + 110
+        l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#C53030"), 2))
+        self.static_items.append(l_exit)
+        self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25, color="#C53030", width=2)
+        self._draw_parallelogram(exit_x - 65, d_cy + 25, 140, 40, "Кінець циклу for")
+
+        # 3. Тіло циклу (вниз) - Так (True) зелена стрілка
+        body_y = d_cy + d_h / 2 + 35
+        self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y, color="#2F855A", width=2)
+
         b3_w, b3_h = 200, 42
         b3_x = cx - b3_w / 2
-        rect3 = QGraphicsRectItem(b3_x, y, b3_w, b3_h)
+        rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
         rect3.setBrush(QBrush(QColor("#C6F6D5")))
         rect3.setPen(QPen(QColor("#2F855A"), 1.8))
         self.scene.addItem(rect3)
         self.static_items.append(rect3)
 
-        t3 = QGraphicsTextItem("⚙️ Виконання тіла циклу")
+        t3 = QGraphicsTextItem(f"Тіло: {loop_var} = {loop_val}")
         t3.setDefaultTextColor(QColor("#22543D"))
-        t3.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-        t3.setPos(b3_x + 18, y + 10)
+        t3.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t3.setPos(b3_x + 18, body_y + 10)
         self.scene.addItem(t3)
         self.static_items.append(t3)
 
-        tag = QGraphicsTextItem("✓ ВИКОНУЄТЬСЯ")
-        tag.setDefaultTextColor(QColor("#276749"))
-        tag.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        tag.setPos(b3_x + b3_w + 10, y + 11)
-        self.scene.addItem(tag)
-        self.static_items.append(tag)
-      
+        # 4. Зворотна дуга зліва назад напряму ДО РОМБА (cx - d_w / 2, d_cy)
+        loop_left_x = cx - 160
+        pen_loop = QPen(QColor("#000000"), 2)
+        l_lp1 = self.scene.addLine(cx, body_y + b3_h, cx, body_y + b3_h + 18, pen_loop)
+        l_lp2 = self.scene.addLine(cx, body_y + b3_h + 18, loop_left_x, body_y + b3_h + 18, pen_loop)
+        l_lp3 = self.scene.addLine(loop_left_x, body_y + b3_h + 18, loop_left_x, d_cy, pen_loop)
+        self.static_items.extend([l_lp1, l_lp2, l_lp3])
 
-    
+        # Стрілочка підходить напряму до лівої вершини ромба (cx - d_w / 2, d_cy)
+        self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
+
+        return body_y + b3_h + 40
+
     def _draw_while_loop_flowchart(self, loop_info: dict, variables: dict, cx: int, y: int):
-        """Побудова блок-схеми конкретного циклу з передумовою (while) у реальному часі."""
-        test_expr = loop_info.get("test", "умова") if loop_info else "умова"
-        
-        # Заголовок блок-схеми
+        """Блок-схема 3: Класичний цикл із передумовою (while)."""
         title = QGraphicsTextItem("🔄 Блок-схема: Цикл із передумовою (while)")
         title.setDefaultTextColor(QColor("#004085"))
         title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
@@ -2118,20 +2191,19 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(title)
         y += 40
 
-        loop_var = "i"
+        loop_var = loop_info.get("target", "i") if loop_info else "i"
         if "j" in variables:
             loop_var = "j"
         elif "i" in variables:
             loop_var = "i"
         elif "count" in variables:
             loop_var = "count"
-        elif loop_info and "target" in loop_info:
-            loop_var = loop_info["target"]
 
         loop_val = variables.get(loop_var, 0)
+        test_expr = loop_info.get("test", f"{loop_var} < limit") if loop_info else f"{loop_var} < 5"
 
-        # 1. Блок ініціалізації початкових даних (зверху)
-        b1_w, b1_h = 220, 42
+        # 1. Початок / Ініціалізація
+        b1_w, b1_h = 190, 42
         b1_x = cx - b1_w / 2
         rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
         rect1.setBrush(QBrush(QColor("#BEE3F8")))
@@ -2142,32 +2214,18 @@ class AdaptiveAnimationWidget(QWidget):
         t1 = QGraphicsTextItem(f"Початок: {loop_var} = {loop_val}")
         t1.setDefaultTextColor(QColor("#000000"))
         t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-        t1.setPos(b1_x + 15, y + 9)
+        t1.setPos(b1_x + 15, y + 8)
         self.scene.addItem(t1)
         self.static_items.append(t1)
 
-        desc1 = QGraphicsTextItem("◀ Вхід / Ініціалізація початкових даних")
-        desc1.setDefaultTextColor(QColor("#4A5568"))
-        desc1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc1.setPos(b1_x + b1_w + 10, y + 10)
-        self.scene.addItem(desc1)
-        self.static_items.append(desc1)
-
         self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
 
-        # 2. Ромб перевірки виразу передумови
+        # 2. Ромб перевірки передумови
         d_cy = y + b1_h + 30 + 35
-        d_w, d_h = 170, 70
+        d_w, d_h = 160, 70
         self._draw_diamond(cx, d_cy, d_w, d_h, f"while {test_expr} ?")
 
-        desc_diamond = QGraphicsTextItem("◀ Перевірка виразу (умова while)")
-        desc_diamond.setDefaultTextColor(QColor("#4A5568"))
-        desc_diamond.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc_diamond.setPos(cx + d_w / 2 + 10, d_cy - 35)
-        self.scene.addItem(desc_diamond)
-        self.static_items.append(desc_diamond)
-
-        # Мітки гілок Так / Ні
+        # Гілка ТАК (донизу): зелений
         lbl_yes = QGraphicsTextItem("Так (True)")
         lbl_yes.setDefaultTextColor(QColor("#276749"))
         lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
@@ -2175,6 +2233,7 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(lbl_yes)
         self.static_items.append(lbl_yes)
 
+        # Гілка НІ (праворуч вихід): червоний
         lbl_no = QGraphicsTextItem("Ні (False)")
         lbl_no.setDefaultTextColor(QColor("#C53030"))
         lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
@@ -2182,25 +2241,18 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(lbl_no)
         self.static_items.append(lbl_no)
 
-        # Гілка виходу з циклу (праворуч)
+        # Гілка False (Вихід) - ЧЕРВОНА
         exit_x = cx + d_w / 2 + 110
-        l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#000000"), 2))
+        l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#C53030"), 2))
         self.static_items.append(l_exit)
-        self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25)
+        self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25, color="#C53030", width=2)
         self._draw_parallelogram(exit_x - 65, d_cy + 25, 140, 40, "Вихід з циклу while")
 
-        desc_exit = QGraphicsTextItem("◀ Завершення ітерацій while")
-        desc_exit.setDefaultTextColor(QColor("#4A5568"))
-        desc_exit.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc_exit.setPos(exit_x + 80, d_cy + 35)
-        self.scene.addItem(desc_exit)
-        self.static_items.append(desc_exit)
-
-        # 3. Виконання операторів тіла циклу (вниз)
+        # 3. Виконання операторів (тіло циклу) - ЗЕЛЕНА стрілка
         body_y = d_cy + d_h / 2 + 35
-        self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y)
+        self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y, color="#2F855A", width=2)
 
-        b3_w, b3_h = 210, 42
+        b3_w, b3_h = 190, 40
         b3_x = cx - b3_w / 2
         rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
         rect3.setBrush(QBrush(QColor("#EBF8FF")))
@@ -2208,23 +2260,16 @@ class AdaptiveAnimationWidget(QWidget):
         self.scene.addItem(rect3)
         self.static_items.append(rect3)
 
-        t3 = QGraphicsTextItem(f"Тіло: {loop_var} = {loop_val}")
+        t3 = QGraphicsTextItem(f"Крок: {loop_var} = {loop_val}")
         t3.setDefaultTextColor(QColor("#000000"))
         t3.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-        t3.setPos(b3_x + 18, body_y + 9)
+        t3.setPos(b3_x + 18, body_y + 8)
         self.scene.addItem(t3)
         self.static_items.append(t3)
 
-        desc3 = QGraphicsTextItem("◀ Виконання операторів (тіло циклу)")
-        desc3.setDefaultTextColor(QColor("#4A5568"))
-        desc3.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc3.setPos(b3_x + b3_w + 10, body_y + 10)
-        self.scene.addItem(desc3)
-        self.static_items.append(desc3)
-
         self._draw_arrow(cx, body_y + b3_h, cx, body_y + b3_h + 25)
 
-        # 4. Модифікація параметрів та стан змінних
+        # 4. Модифікація параметрів
         b4_y = body_y + b3_h + 25
         b4_w, b4_h = 240, 42
         b4_x = cx - b4_w / 2
@@ -2235,39 +2280,463 @@ class AdaptiveAnimationWidget(QWidget):
         self.static_items.append(rect4)
 
         other_vars = [f"{k}={v}" for k, v in variables.items() if k != loop_var and not isinstance(v, list)]
-        sub_text = ", ".join(other_vars) if other_vars else f"Ітерація while ({loop_val})"
-        t4 = QGraphicsTextItem(f"Модифікація: {sub_text}")
+        sub_text = ", ".join(other_vars) if other_vars else f"Ітерація {loop_val + 1} триває"
+        t4 = QGraphicsTextItem(f"Стан: {sub_text}")
         t4.setDefaultTextColor(QColor("#000000"))
         t4.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
         t4.setPos(b4_x + 10, b4_y + 9)
         self.scene.addItem(t4)
         self.static_items.append(t4)
 
-        desc4 = QGraphicsTextItem("◀ Модифікація параметрів циклу")
-        desc4.setDefaultTextColor(QColor("#4A5568"))
-        desc4.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc4.setPos(b4_x + b4_w + 10, b4_y + 11)
-        self.scene.addItem(desc4)
-        self.static_items.append(desc4)
-
-        # 5. Повторення процесу: зворотна дуга зліва вгору до ромба передумови
+        # 5. Повторення процесу: зворотна дуга зліва вгору ДО РОМБА (cx - d_w / 2, d_cy)
         loop_left_x = cx - 160
         pen_loop = QPen(QColor("#000000"), 2)
         l_lp1 = self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
         l_lp2 = self.scene.addLine(cx, b4_y + b4_h + 18, loop_left_x, b4_y + b4_h + 18, pen_loop)
         l_lp3 = self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
         self.static_items.extend([l_lp1, l_lp2, l_lp3])
-        self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
 
-        desc_loop = QGraphicsTextItem("Повторення процесу\n(повернення в умову while) ▶")
-        desc_loop.setDefaultTextColor(QColor("#4A5568"))
-        desc_loop.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-        desc_loop.setPos(loop_left_x - 175, d_cy - 12)
-        self.scene.addItem(desc_loop)
-        self.static_items.append(desc_loop)
+        # Стрілочка від лівої лінії з'єднується напряму з ромбом у точці (cx - d_w / 2, d_cy)
+        self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
 
         return b4_y + b4_h + 40
 
+    def _draw_while_true_break_continue_flowchart(self, loop_info: dict, variables: dict, cx: int, y: int):
+        """Блок-схема 4: Цикл з післяумовою / while True (з break та continue)."""
+        title = QGraphicsTextItem("🔄 Блок-схема: Цикл з післяумовою / while True (break & continue)")
+        title.setDefaultTextColor(QColor("#004085"))
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setPos(cx - title.boundingRect().width() / 2, y)
+        self.scene.addItem(title)
+        self.static_items.append(title)
+        y += 40
+
+        break_cond = loop_info.get("break_cond") if loop_info else None
+        if not break_cond:
+            break_cond = "умова_виходу"
+
+        continue_cond = loop_info.get("continue_cond") if loop_info else None
+
+        # 1. Початок циклу
+        b1_w, b1_h = 220, 42
+        b1_x = cx - b1_w / 2
+        rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
+        rect1.setBrush(QBrush(QColor("#BEE3F8")))
+        rect1.setPen(QPen(QColor("#2B6CB0"), 1.8))
+        self.scene.addItem(rect1)
+        self.static_items.append(rect1)
+
+        t1 = QGraphicsTextItem("Початок: while True:")
+        t1.setDefaultTextColor(QColor("#000000"))
+        t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t1.setPos(b1_x + 20, y + 8)
+        self.scene.addItem(t1)
+        self.static_items.append(t1)
+
+        self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 25)
+        y += b1_h + 25
+
+        # 2. Тіло циклу (перша частина)
+        b2_w, b2_h = 220, 40
+        b2_x = cx - b2_w / 2
+        rect2 = QGraphicsRectItem(b2_x, y, b2_w, b2_h)
+        rect2.setBrush(QBrush(QColor("#EBF8FF")))
+        rect2.setPen(QPen(QColor("#3182CE"), 1.8))
+        self.scene.addItem(rect2)
+        self.static_items.append(rect2)
+
+        t2 = QGraphicsTextItem("⚙️ Виконання дій ітерації")
+        t2.setDefaultTextColor(QColor("#2B6CB0"))
+        t2.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        t2.setPos(b2_x + 18, y + 8)
+        self.scene.addItem(t2)
+        self.static_items.append(t2)
+
+        self._draw_arrow(cx, y + b2_h, cx, y + b2_h + 30)
+        y += b2_h + 30
+
+        # 3. Перевірка умови (if break)
+        d1_cy = y + 35
+        d1_w, d1_h = 170, 68
+        self._draw_diamond(cx, d1_cy, d1_w, d1_h, f"if {break_cond} ?")
+
+        # Так (True) -> зелений (вихід праворуч через break)
+        lbl_br_yes = QGraphicsTextItem("Так (True)")
+        lbl_br_yes.setDefaultTextColor(QColor("#276749"))
+        lbl_br_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_br_yes.setPos(cx + d1_w / 2 + 8, d1_cy - 24)
+        self.scene.addItem(lbl_br_yes)
+        self.static_items.append(lbl_br_yes)
+
+        # Ні (False) -> червоний (продовження циклу донизу)
+        lbl_br_no = QGraphicsTextItem("Ні (False)")
+        lbl_br_no.setDefaultTextColor(QColor("#C53030"))
+        lbl_br_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_br_no.setPos(cx + 6, d1_cy + d1_h / 2 + 4)
+        self.scene.addItem(lbl_br_no)
+        self.static_items.append(lbl_br_no)
+
+        # Гілка break (праворуч) - зелена лінія для Так (True)
+        exit_x = cx + d1_w / 2 + 120
+        l_br = self.scene.addLine(cx + d1_w / 2, d1_cy, exit_x, d1_cy, QPen(QColor("#2F855A"), 2))
+        self.static_items.append(l_br)
+
+        # Прямокутник break
+        rect_br = QGraphicsRectItem(exit_x - 40, d1_cy + 25, 80, 32)
+        rect_br.setBrush(QBrush(QColor("#C6F6D5")))
+        rect_br.setPen(QPen(QColor("#2F855A"), 1.8))
+        self.scene.addItem(rect_br)
+        self.static_items.append(rect_br)
+
+        t_br = QGraphicsTextItem("break")
+        t_br.setDefaultTextColor(QColor("#22543D"))
+        t_br.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t_br.setPos(exit_x - 22, d1_cy + 29)
+        self.scene.addItem(t_br)
+        self.static_items.append(t_br)
+
+        self._draw_arrow(exit_x, d1_cy, exit_x, d1_cy + 25, color="#2F855A", width=2)
+        self._draw_arrow(exit_x, d1_cy + 25 + 32, exit_x, d1_cy + 25 + 32 + 25, color="#2F855A", width=2)
+
+        self._draw_parallelogram(exit_x - 80, d1_cy + 25 + 32 + 25, 160, 40, "Вихід з циклу (break)")
+
+        # 4. Продовження виконання вниз (Ні / False) - червона стрілка
+        y_next = d1_cy + d1_h / 2 + 35
+        self._draw_arrow(cx, d1_cy + d1_h / 2, cx, y_next, color="#C53030", width=2)
+
+        if continue_cond:
+            d2_cy = y_next + 35
+            d2_w, d2_h = 170, 68
+            self._draw_diamond(cx, d2_cy, d2_w, d2_h, f"if {continue_cond} ?")
+
+            # Гілка continue (ліворуч) - Так (True) зелена
+            lbl_cnt_yes = QGraphicsTextItem("Так (True)")
+            lbl_cnt_yes.setDefaultTextColor(QColor("#276749"))
+            lbl_cnt_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            lbl_cnt_yes.setPos(cx - d2_w / 2 - 80, d2_cy - 24)
+            self.scene.addItem(lbl_cnt_yes)
+            self.static_items.append(lbl_cnt_yes)
+
+            cnt_left_x = cx - d2_w / 2 - 120
+            l_cnt = self.scene.addLine(cx - d2_w / 2, d2_cy, cnt_left_x, d2_cy, QPen(QColor("#2F855A"), 2))
+            l_cnt_up = self.scene.addLine(cnt_left_x, d2_cy, cnt_left_x, d1_cy, QPen(QColor("#2F855A"), 2))
+            self.static_items.extend([l_cnt, l_cnt_up])
+            # З'єднання стрілочки continue з ромбом d1
+            self._draw_arrow(cnt_left_x, d1_cy, cx - d1_w / 2, d1_cy, color="#2F855A", width=2)
+
+            # Гілка далі вниз - Ні (False) червона
+            lbl_cnt_no = QGraphicsTextItem("Ні (False)")
+            lbl_cnt_no.setDefaultTextColor(QColor("#C53030"))
+            lbl_cnt_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            lbl_cnt_no.setPos(cx + 6, d2_cy + d2_h / 2 + 4)
+            self.scene.addItem(lbl_cnt_no)
+            self.static_items.append(lbl_cnt_no)
+
+            y_next = d2_cy + d2_h / 2 + 35
+            self._draw_arrow(cx, d2_cy + d2_h / 2, cx, y_next, color="#C53030", width=2)
+
+        # 4. Фінальні оператори та зворотна дуга напряму ДО РОМБА d1 (cx - d1_w / 2, d1_cy)
+        b5_w, b5_h = 220, 40
+        b5_x = cx - b5_w / 2
+        rect5 = QGraphicsRectItem(b5_x, y_next, b5_w, b5_h)
+        rect5.setBrush(QBrush(QColor("#E2E8F0")))
+        rect5.setPen(QPen(QColor("#4A5568"), 1.8))
+        self.scene.addItem(rect5)
+        self.static_items.append(rect5)
+
+        t5 = QGraphicsTextItem("🔄 Перехід на наступну ітерацію")
+        t5.setDefaultTextColor(QColor("#2D3748"))
+        t5.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        t5.setPos(b5_x + 12, y_next + 8)
+        self.scene.addItem(t5)
+        self.static_items.append(t5)
+
+        loop_left_x = cx - 170
+        pen_loop = QPen(QColor("#000000"), 2)
+        l_lp1 = self.scene.addLine(cx, y_next + b5_h, cx, y_next + b5_h + 20, pen_loop)
+        l_lp2 = self.scene.addLine(cx, y_next + b5_h + 20, loop_left_x, y_next + b5_h + 20, pen_loop)
+        l_lp3 = self.scene.addLine(loop_left_x, y_next + b5_h + 20, loop_left_x, d1_cy, pen_loop)
+        self.static_items.extend([l_lp1, l_lp2, l_lp3])
+
+        # З'єднання лівої стрілочки безпосередньо з ромбом у точці (cx - d1_w / 2, d1_cy)
+        self._draw_arrow(loop_left_x, d1_cy, cx - d1_w / 2, d1_cy, color="#000000", width=2)
+
+        return y_next + b5_h + 40
+
+    def _draw_for_range_flowchart(self, loop_info: dict, variables: dict, cx: int, y: int):
+        """Блок-схема 5: Цикл із лічильником (for var in range(start, end, step))."""
+        title = QGraphicsTextItem("🔢 Блок-схема: Цикл із лічильником (for in range)")
+        title.setDefaultTextColor(QColor("#004085"))
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setPos(cx - title.boundingRect().width() / 2, y)
+        self.scene.addItem(title)
+        self.static_items.append(title)
+        y += 40
+
+        var_name = loop_info.get("target", "i") if loop_info else "i"
+        var_val = variables.get(var_name, 0)
+
+        range_args = loop_info.get("range_args", []) if loop_info else []
+        if len(range_args) == 1:
+            start_str, end_str, step_str = "0", range_args[0], "1"
+        elif len(range_args) == 2:
+            start_str, end_str, step_str = range_args[0], range_args[1], "1"
+        elif len(range_args) >= 3:
+            start_str, end_str, step_str = range_args[0], range_args[1], range_args[2]
+        else:
+            start_str, end_str, step_str = "0", "10", "1"
+
+        # 1. Ініціалізація лічильника
+        b1_w, b1_h = 220, 42
+        b1_x = cx - b1_w / 2
+        rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
+        rect1.setBrush(QBrush(QColor("#BEE3F8")))
+        rect1.setPen(QPen(QColor("#2B6CB0"), 1.8))
+        self.scene.addItem(rect1)
+        self.static_items.append(rect1)
+
+        t1 = QGraphicsTextItem(f"Ініціалізація: {var_name} = {start_str}")
+        t1.setDefaultTextColor(QColor("#000000"))
+        t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t1.setPos(b1_x + 12, y + 8)
+        self.scene.addItem(t1)
+        self.static_items.append(t1)
+
+        self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
+
+        # 2. Ромб перевірки лічильника
+        d_cy = y + b1_h + 30 + 35
+        d_w, d_h = 170, 70
+        self._draw_diamond(cx, d_cy, d_w, d_h, f"{var_name} < {end_str} ?")
+
+        # Гілка ТАК (донизу): зелений
+        lbl_yes = QGraphicsTextItem("Так (True)")
+        lbl_yes.setDefaultTextColor(QColor("#276749"))
+        lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_yes.setPos(cx + 6, d_cy + d_h / 2 + 4)
+        self.scene.addItem(lbl_yes)
+        self.static_items.append(lbl_yes)
+
+        # Гілка НІ (праворуч вихід): червоний
+        lbl_no = QGraphicsTextItem("Ні (False)")
+        lbl_no.setDefaultTextColor(QColor("#C53030"))
+        lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_no.setPos(cx + d_w / 2 + 8, d_cy - 24)
+        self.scene.addItem(lbl_no)
+        self.static_items.append(lbl_no)
+
+        # Гілка False (Вихід) - ЧЕРВОНА
+        exit_x = cx + d_w / 2 + 110
+        l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#C53030"), 2))
+        self.static_items.append(l_exit)
+        self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25, color="#C53030", width=2)
+        self._draw_parallelogram(exit_x - 70, d_cy + 25, 150, 40, "Завершення циклу range")
+
+        # 3. Виконання дій тіла циклу - ЗЕЛЕНА стрілка
+        body_y = d_cy + d_h / 2 + 35
+        self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y, color="#2F855A", width=2)
+
+        b3_w, b3_h = 220, 40
+        b3_x = cx - b3_w / 2
+        rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
+        rect3.setBrush(QBrush(QColor("#EBF8FF")))
+        rect3.setPen(QPen(QColor("#3182CE"), 1.8))
+        self.scene.addItem(rect3)
+        self.static_items.append(rect3)
+
+        t3 = QGraphicsTextItem(f"Тіло: {var_name} = {var_val}")
+        t3.setDefaultTextColor(QColor("#000000"))
+        t3.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t3.setPos(b3_x + 20, body_y + 8)
+        self.scene.addItem(t3)
+        self.static_items.append(t3)
+
+        self._draw_arrow(cx, body_y + b3_h, cx, body_y + b3_h + 25)
+
+        # 4. Приріст лічильника (var += step)
+        b4_y = body_y + b3_h + 25
+        b4_w, b4_h = 220, 42
+        b4_x = cx - b4_w / 2
+        rect4 = QGraphicsRectItem(b4_x, b4_y, b4_w, b4_h)
+        rect4.setBrush(QBrush(QColor("#C6F6D5")))
+        rect4.setPen(QPen(QColor("#2F855A"), 1.8))
+        self.scene.addItem(rect4)
+        self.static_items.append(rect4)
+
+        t4 = QGraphicsTextItem(f"Приріст: {var_name} += {step_str}")
+        t4.setDefaultTextColor(QColor("#22543D"))
+        t4.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t4.setPos(b4_x + 18, b4_y + 9)
+        self.scene.addItem(t4)
+        self.static_items.append(t4)
+
+        # 5. Зворотна дуга зліва напряму ДО РОМБА (cx - d_w / 2, d_cy)
+        loop_left_x = cx - 160
+        pen_loop = QPen(QColor("#000000"), 2)
+        l_lp1 = self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
+        l_lp2 = self.scene.addLine(cx, b4_y + b4_h + 18, loop_left_x, b4_y + b4_h + 18, pen_loop)
+        l_lp3 = self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
+        self.static_items.extend([l_lp1, l_lp2, l_lp3])
+
+        # Стрілочка від лівої лінії з'єднується напряму з ромбом у точці (cx - d_w / 2, d_cy)
+        self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
+
+        return b4_y + b4_h + 40
+
+    def _draw_nested_conditional_flowchart(self, cond_chain: list, variables: dict, cx: int, y: int):
+        """Блок-схема 6: Вкладені умовні розгалуження (Nested If / Multilevel Elif)."""
+        title = QGraphicsTextItem("🔀 Блок-схема: Вкладені розгалуження (Nested If)")
+        title.setDefaultTextColor(QColor("#004085"))
+        title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        title.setPos(cx - title.boundingRect().width() / 2, y)
+        self.scene.addItem(title)
+        self.static_items.append(title)
+        y += 40
+
+        outer_branch = cond_chain[0] if cond_chain else {"test": "умова_1", "body": ["pass"]}
+        outer_test = outer_branch.get("test", "умова_1")
+
+        nested_info = outer_branch.get("nested", [])
+        inner_branch = nested_info[0] if nested_info else {"test": "вкладена_умова", "body": ["pass"]}
+        inner_test = inner_branch.get("test", "вкладена_умова")
+
+        # 1. Вхід / Зовнішній стан
+        init_vars = [f"{k} = {v}" for k, v in variables.items() if not k.startswith("_") and not isinstance(v, (list, dict))]
+        start_code_text = ", ".join(init_vars) if init_vars else "стан змінних"
+
+        b_start_w, b_start_h = 180, 36
+        b_start_x = cx - b_start_w / 2
+        rect_start = QGraphicsRectItem(b_start_x, y, b_start_w, b_start_h)
+        rect_start.setBrush(QBrush(QColor("#BEE3F8")))
+        rect_start.setPen(QPen(QColor("#2B6CB0"), 1.8))
+        self.scene.addItem(rect_start)
+        self.static_items.append(rect_start)
+
+        t_start = QGraphicsTextItem(start_code_text)
+        t_start.setDefaultTextColor(QColor("#000000"))
+        t_start.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        t_start.setPos(b_start_x + (b_start_w - t_start.boundingRect().width()) / 2, y + 6)
+        self.scene.addItem(t_start)
+        self.static_items.append(t_start)
+
+        self._draw_arrow(cx, y + b_start_h, cx, y + b_start_h + 30)
+        y += b_start_h + 30
+
+        # 2. Зовнішній ромб умови 1
+        d1_cy = y + 35
+        d1_w, d1_h = 180, 68
+        self._draw_diamond(cx, d1_cy, d1_w, d1_h, f"if {outer_test} ?")
+
+        # Гілка Зовнішній True (зліва) - ЗЕЛЕНА
+        outer_true_x = cx - d1_w / 2 - 110
+        l_out_t = self.scene.addLine(cx - d1_w / 2, d1_cy, outer_true_x, d1_cy, QPen(QColor("#2F855A"), 1.8))
+        self.static_items.append(l_out_t)
+
+        lbl_ot = QGraphicsTextItem("Так (True)")
+        lbl_ot.setDefaultTextColor(QColor("#276749"))
+        lbl_ot.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_ot.setPos((cx - d1_w / 2 + outer_true_x) / 2 - 25, d1_cy - 20)
+        self.scene.addItem(lbl_ot)
+        self.static_items.append(lbl_ot)
+
+        self._draw_arrow(outer_true_x, d1_cy, outer_true_x, d1_cy + 35, color="#2F855A", width=1.8)
+
+        # 3. Внутрішній ромб перевірки вкладеної умови 1.1
+        d2_cy = d1_cy + 35 + 35
+        d2_w, d2_h = 170, 68
+        self._draw_diamond(outer_true_x, d2_cy, d2_w, d2_h, f"if {inner_test} ?")
+
+        # Вкладений True (донизу) - ЗЕЛЕНИЙ
+        in_true_y = d2_cy + d2_h / 2 + 35
+        self._draw_arrow(outer_true_x, d2_cy + d2_h / 2, outer_true_x, in_true_y, color="#2F855A", width=1.8)
+
+        lbl_it = QGraphicsTextItem("Так (True)")
+        lbl_it.setDefaultTextColor(QColor("#276749"))
+        lbl_it.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_it.setPos(outer_true_x + 6, d2_cy + d2_h / 2 + 4)
+        self.scene.addItem(lbl_it)
+        self.static_items.append(lbl_it)
+
+        b_in_t_w, b_in_t_h = 160, 42
+        rect_in_t = QGraphicsRectItem(outer_true_x - b_in_t_w / 2, in_true_y, b_in_t_w, b_in_t_h)
+        rect_in_t.setBrush(QBrush(QColor("#C6F6D5")))
+        rect_in_t.setPen(QPen(QColor("#2F855A"), 2))
+        self.scene.addItem(rect_in_t)
+        self.static_items.append(rect_in_t)
+
+        in_body_text = "; ".join(inner_branch.get("body", ["pass"]))
+        if len(in_body_text) > 20: in_body_text = in_body_text[:18] + "..."
+        t_in_t = QGraphicsTextItem(f"Блок 1.1: {in_body_text}")
+        t_in_t.setDefaultTextColor(QColor("#22543D"))
+        t_in_t.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        t_in_t.setPos(outer_true_x - b_in_t_w / 2 + 8, in_true_y + 10)
+        self.scene.addItem(t_in_t)
+        self.static_items.append(t_in_t)
+
+        # Вкладений False / else (праворуч від вкладеного ромба) - ЧЕРВОНИЙ
+        in_false_x = outer_true_x + d2_w / 2 + 80
+        l_in_f = self.scene.addLine(outer_true_x + d2_w / 2, d2_cy, in_false_x, d2_cy, QPen(QColor("#C53030"), 1.8))
+        self.static_items.append(l_in_f)
+        self._draw_arrow(in_false_x, d2_cy, in_false_x, in_true_y, color="#C53030", width=1.8)
+
+        lbl_if = QGraphicsTextItem("Ні (False)")
+        lbl_if.setDefaultTextColor(QColor("#C53030"))
+        lbl_if.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_if.setPos((outer_true_x + d2_w / 2 + in_false_x) / 2 - 20, d2_cy - 20)
+        self.scene.addItem(lbl_if)
+        self.static_items.append(lbl_if)
+
+        rect_in_f = QGraphicsRectItem(in_false_x - b_in_t_w / 2, in_true_y, b_in_t_w, b_in_t_h)
+        rect_in_f.setBrush(QBrush(QColor("#EDF2F7")))
+        rect_in_f.setPen(QPen(QColor("#718096"), 1.6))
+        self.scene.addItem(rect_in_f)
+        self.static_items.append(rect_in_f)
+
+        else_body_text = "; ".join(inner_branch.get("else", ["pass"])) if inner_branch.get("else") else "вкладений else"
+        if len(else_body_text) > 20: else_body_text = else_body_text[:18] + "..."
+        t_in_f = QGraphicsTextItem(f"Блок 1.2: {else_body_text}")
+        t_in_f.setDefaultTextColor(QColor("#2D3748"))
+        t_in_f.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        t_in_f.setPos(in_false_x - b_in_t_w / 2 + 8, in_true_y + 10)
+        self.scene.addItem(t_in_f)
+        self.static_items.append(t_in_f)
+
+        # 4. Гілка Зовнішній False (праворуч від зовнішнього ромба) - ЧЕРВОНА
+        outer_false_x = cx + d1_w / 2 + 130
+        l_out_f = self.scene.addLine(cx + d1_w / 2, d1_cy, outer_false_x, d1_cy, QPen(QColor("#C53030"), 1.8))
+        self.static_items.append(l_out_f)
+
+        lbl_of = QGraphicsTextItem("Ні (False)")
+        lbl_of.setDefaultTextColor(QColor("#C53030"))
+        lbl_of.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        lbl_of.setPos((cx + d1_w / 2 + outer_false_x) / 2 - 25, d1_cy - 20)
+        self.scene.addItem(lbl_of)
+        self.static_items.append(lbl_of)
+
+        self._draw_arrow(outer_false_x, d1_cy, outer_false_x, in_true_y, color="#C53030", width=1.8)
+
+        rect_out_f = QGraphicsRectItem(outer_false_x - b_in_t_w / 2, in_true_y, b_in_t_w, b_in_t_h)
+        rect_out_f.setBrush(QBrush(QColor("#EDF2F7")))
+        rect_out_f.setPen(QPen(QColor("#718096"), 1.6))
+        self.scene.addItem(rect_out_f)
+        self.static_items.append(rect_out_f)
+
+        t_out_f = QGraphicsTextItem("Блок 2: зовнішній else")
+        t_out_f.setDefaultTextColor(QColor("#2D3748"))
+        t_out_f.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        t_out_f.setPos(outer_false_x - b_in_t_w / 2 + 8, in_true_y + 10)
+        self.scene.addItem(t_out_f)
+        self.static_items.append(t_out_f)
+
+        # 5. Зведення всіх гілок в одну точку внизу
+        merge_y = in_true_y + b_in_t_h + 30
+        l_m1 = self.scene.addLine(outer_true_x, in_true_y + b_in_t_h, outer_true_x, merge_y, QPen(QColor("#718096"), 1.5))
+        l_m2 = self.scene.addLine(in_false_x, in_true_y + b_in_t_h, in_false_x, merge_y, QPen(QColor("#718096"), 1.5))
+        l_m3 = self.scene.addLine(outer_false_x, in_true_y + b_in_t_h, outer_false_x, merge_y, QPen(QColor("#718096"), 1.5))
+        h_m = self.scene.addLine(outer_true_x, merge_y, outer_false_x, merge_y, QPen(QColor("#718096"), 1.5))
+        self.static_items.extend([l_m1, l_m2, l_m3, h_m])
+
+        return merge_y + 30
 
     def update_variables(self, variables: dict, meta_info: dict):
         self._clear_static_items()
@@ -2321,160 +2790,28 @@ class AdaptiveAnimationWidget(QWidget):
             self.static_items.append(title)
 
             self._draw_class_tree(meta_info["classes"], meta_info.get("relations", []), y + 20, cx, meta_info.get("class_details", {}), variables)
-        
+
         elif has_loops:
             loops_list = meta_info.get("loops", [])
-            while_loop = next((l for l in loops_list if l.get("type") == "while"), None)
-            
-            if while_loop:
-                self._draw_while_loop_flowchart(while_loop, variables, cx, y)
+            loop_info = loops_list[0] if loops_list else {}
+
+            # Точне розрізнення 4 типів циклів:
+            if loop_info.get("type") == "while" and (loop_info.get("is_while_true") or loop_info.get("has_break") or loop_info.get("has_continue")):
+                self._draw_while_true_break_continue_flowchart(loop_info, variables, cx, y)
+            elif loop_info.get("type") == "while":
+                self._draw_while_loop_flowchart(loop_info, variables, cx, y)
+            elif loop_info.get("type") == "for" and loop_info.get("is_range"):
+                self._draw_for_range_flowchart(loop_info, variables, cx, y)
             else:
-                loop_var = "i"
-                if "j" in variables:
-                    loop_var = "j"
-                elif "i" in variables:
-                    loop_var = "i"
-                elif "count" in variables:
-                    loop_var = "count"
+                self._draw_loop_flowchart(loop_info, variables, cx, y)
 
-                loop_val = variables.get(loop_var, 0)
-                list_obj = next((v for v in variables.values() if isinstance(v, list)), None)
-                limit_val = len(list_obj) if list_obj is not None else 5
-
-                b1_w, b1_h = 180, 40
-                b1_x = cx - b1_w / 2
-                rect1 = QGraphicsRectItem(b1_x, y, b1_w, b1_h)
-                rect1.setBrush(QBrush(QColor("#BEE3F8")))
-                rect1.setPen(QPen(QColor("#2B6CB0"), 1.8))
-                self.scene.addItem(rect1)
-                self.static_items.append(rect1)
-
-                t1 = QGraphicsTextItem(f"Початок: {loop_var} = {loop_val}")
-                t1.setDefaultTextColor(QColor("#000000"))
-                t1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-                t1.setPos(b1_x + 15, y + 8)
-                self.scene.addItem(t1)
-                self.static_items.append(t1)
-
-                desc1 = QGraphicsTextItem("◀ Вхід / Ініціалізація лічильника")
-                desc1.setDefaultTextColor(QColor("#4A5568"))
-                desc1.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc1.setPos(b1_x + b1_w + 10, y + 10)
-                self.scene.addItem(desc1)
-                self.static_items.append(desc1)
-
-                self._draw_arrow(cx, y + b1_h, cx, y + b1_h + 30)
-
-                d_cy = y + b1_h + 30 + 35
-                d_w, d_h = 150, 70
-                self._draw_diamond(cx, d_cy, d_w, d_h, f"{loop_var} < {limit_val} ?")
-
-                desc_diamond = QGraphicsTextItem("◀ Умова продовження циклу")
-                desc_diamond.setDefaultTextColor(QColor("#4A5568"))
-                desc_diamond.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc_diamond.setPos(cx + d_w / 2 + 10, d_cy - 35)
-                self.scene.addItem(desc_diamond)
-                self.static_items.append(desc_diamond)
-
-                lbl_yes = QGraphicsTextItem("Так (True)")
-                lbl_yes.setDefaultTextColor(QColor("#000000"))
-                lbl_yes.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-                lbl_yes.setPos(cx + 6, d_cy + d_h / 2 + 4)
-                self.scene.addItem(lbl_yes)
-                self.static_items.append(lbl_yes)
-
-                lbl_no = QGraphicsTextItem("Ні (False)")
-                lbl_no.setDefaultTextColor(QColor("#000000"))
-                lbl_no.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-                lbl_no.setPos(cx + d_w / 2 + 8, d_cy - 24)
-                self.scene.addItem(lbl_no)
-                self.static_items.append(lbl_no)
-
-                exit_x = cx + d_w / 2 + 110
-                l_exit = self.scene.addLine(cx + d_w / 2, d_cy, exit_x, d_cy, QPen(QColor("#000000"), 2))
-                self.static_items.append(l_exit)
-                self._draw_arrow(exit_x, d_cy, exit_x, d_cy + 25)
-                self._draw_parallelogram(exit_x - 65, d_cy + 25, 140, 40, "Вихід з циклу")
-
-                desc_exit = QGraphicsTextItem("◀ Завершення ітерацій")
-                desc_exit.setDefaultTextColor(QColor("#4A5568"))
-                desc_exit.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc_exit.setPos(exit_x + 80, d_cy + 35)
-                self.scene.addItem(desc_exit)
-                self.static_items.append(desc_exit)
-
-                body_y = d_cy + d_h / 2 + 35
-                self._draw_arrow(cx, d_cy + d_h / 2, cx, body_y)
-
-                b3_w, b3_h = 180, 40
-                b3_x = cx - b3_w / 2
-                rect3 = QGraphicsRectItem(b3_x, body_y, b3_w, b3_h)
-                rect3.setBrush(QBrush(QColor("#EBF8FF")))
-                rect3.setPen(QPen(QColor("#3182CE"), 1.8))
-                self.scene.addItem(rect3)
-                self.static_items.append(rect3)
-
-                t3 = QGraphicsTextItem(f"Крок: {loop_var} = {loop_val}")
-                t3.setDefaultTextColor(QColor("#000000"))
-                t3.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-                t3.setPos(b3_x + 18, body_y + 8)
-                self.scene.addItem(t3)
-                self.static_items.append(t3)
-
-                desc3 = QGraphicsTextItem("◀ Тіло циклу (дія на поточному кроці)")
-                desc3.setDefaultTextColor(QColor("#4A5568"))
-                desc3.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc3.setPos(b3_x + b3_w + 10, body_y + 10)
-                self.scene.addItem(desc3)
-                self.static_items.append(desc3)
-
-                self._draw_arrow(cx, body_y + b3_h, cx, body_y + b3_h + 25)
-
-                b4_y = body_y + b3_h + 25
-                b4_w, b4_h = 240, 42
-                b4_x = cx - b4_w / 2
-                rect4 = QGraphicsRectItem(b4_x, b4_y, b4_w, b4_h)
-                rect4.setBrush(QBrush(QColor("#E2E8F0")))
-                rect4.setPen(QPen(QColor("#4A5568"), 1.8))
-                self.scene.addItem(rect4)
-                self.static_items.append(rect4)
-
-                other_vars = [f"{k}={v}" for k, v in variables.items() if k != loop_var and not isinstance(v, list)]
-                sub_text = ", ".join(other_vars) if other_vars else f"Ітерація {loop_val + 1} триває"
-                t4 = QGraphicsTextItem(f"Стан: {sub_text}")
-                t4.setDefaultTextColor(QColor("#000000"))
-                t4.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-                t4.setPos(b4_x + 10, b4_y + 9)
-                self.scene.addItem(t4)
-                self.static_items.append(t4)
-
-                desc4 = QGraphicsTextItem("◀ Поточні значення змінних")
-                desc4.setDefaultTextColor(QColor("#4A5568"))
-                desc4.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc4.setPos(b4_x + b4_w + 10, b4_y + 11)
-                self.scene.addItem(desc4)
-                self.static_items.append(desc4)
-
-                loop_left_x = cx - 150
-                pen_loop = QPen(QColor("#000000"), 2)
-                l_lp1 = self.scene.addLine(cx, b4_y + b4_h, cx, b4_y + b4_h + 18, pen_loop)
-                l_lp2 = self.scene.addLine(cx, b4_y + b4_h + 18, loop_left_x, b4_y + b4_h + 18, pen_loop)
-                l_lp3 = self.scene.addLine(loop_left_x, b4_y + b4_h + 18, loop_left_x, d_cy, pen_loop)
-                self.static_items.extend([l_lp1, l_lp2, l_lp3])
-                self._draw_arrow(loop_left_x, d_cy, cx - d_w / 2, d_cy, color="#000000", width=2)
-
-                desc_loop = QGraphicsTextItem("Наступна ітерація\n(повернення в умову) ▶")
-                desc_loop.setDefaultTextColor(QColor("#4A5568"))
-                desc_loop.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-                desc_loop.setPos(loop_left_x - 145, d_cy - 12)
-                self.scene.addItem(desc_loop)
-                self.static_items.append(desc_loop)
-
-        
         elif has_conditionals:
             cond_chains = meta_info.get("conditionals", [])
             if cond_chains:
-                self._draw_conditional_flowchart(cond_chains[0], variables, cx, y)
+                if meta_info.get("has_nested_conditionals"):
+                    self._draw_nested_conditional_flowchart(cond_chains[0], variables, cx, y)
+                else:
+                    self._draw_conditional_flowchart(cond_chains[0], variables, cx, y)
 
         else:
             var_w, var_h = 140, 42
@@ -2485,13 +2822,13 @@ class AdaptiveAnimationWidget(QWidget):
 
             if not non_list_vars:
                 empty_lbl = QGraphicsTextItem("Операції над масивом виконано.")
-                empty_lbl.setDefaultTextColor(QColor("#000000"))
+                empty_lbl.setDefaultTextColor(QColor("#004085"))
                 empty_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 empty_lbl.setPos(cx - empty_lbl.boundingRect().width() / 2, y + 10)
                 self.scene.addItem(empty_lbl)
                 self.static_items.append(empty_lbl)
                 return
-        
+
             for name, val in non_list_vars.items():
                 vx = cx - var_w / 2
                 rect = QGraphicsRectItem(vx, y, var_w, var_h)
@@ -2525,8 +2862,6 @@ class AdaptiveAnimationWidget(QWidget):
                 prev_center = (vx + var_w / 2, y + var_h)
                 y += var_h + spacing
 
-
-# --- Інтерактивне вікно результату консолі (термінал) ---
 class OutputTextEdit(QPlainTextEdit):
     input_submitted = pyqtSignal(str)
 
