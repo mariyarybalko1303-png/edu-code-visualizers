@@ -2980,7 +2980,7 @@ class CodeVisualizer(QWidget):
     """Головний двопанельний віджет візуалізатора з прив'язкою затримки анімацій до швидкості відтворення."""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Покрокова візуалізація масивів C++ (Масиви, std::vector та матриці)")
+        self.setWindowTitle("Покрокова візуалізація масивів C++")
 
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
