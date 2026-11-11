@@ -687,9 +687,6 @@ class CppUniversalEngine:
         self.current_capacity = None
         self.current_size = None
         self.vector_capacities = {}
-        self.distributions = {}
-        self.generators = set()
-        self.random_seed = None
         self.search_index = None
         self.found_index = None
         self.search_target = None
@@ -1119,39 +1116,6 @@ class CppUniversalEngine:
         expr = re.sub(r"static_cast\s*<\s*(?:double|float)\s*>\s*\(([^)]+)\)", r"float(\1)", expr)
         expr = re.sub(r"static_cast\s*<\s*int\s*>\s*\(([^)]+)\)", r"int(\1)", expr)
 
-        # Generator & Distribution properties (.min(), .max())
-        for dname, (dmin, dmax, is_real) in list(self.distributions.items()):
-            expr = re.sub(rf'\b{dname}\.min\s*\(\s*\)', str(dmin), expr)
-            expr = re.sub(rf'\b{dname}\.max\s*\(\s*\)', str(dmax), expr)
-
-        for gname in list(self.generators):
-            expr = re.sub(rf'\b{gname}\.min\s*\(\s*\)', '0', expr)
-            expr = re.sub(rf'\b{gname}\.max\s*\(\s*\)', '4294967295', expr)
-
-        expr = re.sub(r'\b(?:std\s*::\s*)?mt19937(?:::min\s*\(\s*\)|\.min\s*\(\s*\))', '0', expr)
-        expr = re.sub(r'\b(?:std\s*::\s*)?mt19937(?:::max\s*\(\s*\)|\.max\s*\(\s*\))', '4294967295', expr)
-        expr = re.sub(r'\b(?:std\s*::\s*)?mt19937_64(?:::min\s*\(\s*\)|\.min\s*\(\s*\))', '0', expr)
-        expr = re.sub(r'\b(?:std\s*::\s*)?mt19937_64(?:::max\s*\(\s*\)|\.max\s*\(\s*\))', '18446744073709551615', expr)
-
-        # Distribution calls by name: dist(gen), reals(generator), etc.
-        def repl_dist_call(m):
-            dname = m.group(1)
-            if dname in self.distributions:
-                dmin, dmax, is_real = self.distributions[dname]
-                if is_real:
-                    return str(round(random.uniform(dmin, dmax), getattr(self, "precision", 2)))
-                else:
-                    return str(random.randint(int(dmin), int(dmax)))
-            return m.group(0)
-
-        if self.distributions:
-            d_names_re = '|'.join(map(re.escape, self.distributions.keys()))
-            expr = re.sub(rf'\b({d_names_re})\s*\(\s*(?:[a-zA-Z_]\w*)?\s*\)', repl_dist_call, expr)
-
-        # Direct generator calls: gen(), generator()
-        for gname in list(self.generators):
-            expr = re.sub(rf'\b{gname}\s*\(\s*\)', lambda _: str(random.randint(int(self.random_min), int(self.random_max))), expr)
-
         expr = re.sub(r"\brand\s*\(\s*\)", str(random.randint(0, 32767)), expr)
         expr = re.sub(r"\b\w*dist\w*\s*\(\s*\w*\s*\)", f"__random_val()", expr, flags=re.IGNORECASE)
 
@@ -1209,58 +1173,16 @@ class CppUniversalEngine:
         code = self.clean_code(code_text)
         self.detect_features(code)
 
-        self.distributions.clear()
-        self.generators = {'gen', 'generator', 'rng', 'engine'}
-        self.random_seed = None
-
-        # 1. Parse Generators: std::mt19937, std::mt19937_64, std::default_random_engine
-        gen_pattern = r'\b(?:std\s*::\s*)?(?:mt19937(?:_64)?|default_random_engine)\s+([a-zA-Z_]\w*)(?:\s*(?:\{\s*([^}]*)\s*\}|\(\s*([^)]*)\s*\)))?;?'
-        for m_gen in re.finditer(gen_pattern, code):
-            g_name = m_gen.group(1)
-            self.generators.add(g_name)
-            raw_seed = (m_gen.group(2) or m_gen.group(3) or "").strip()
-            if raw_seed:
-                if re.search(r'\b(?:rd|seed)\s*\(\s*\)', raw_seed) or "random_device" in raw_seed:
-                    random.seed()
-                    self.random_seed = None
-                else:
-                    try:
-                        seed_val = int(self.eval_expression(raw_seed))
-                        random.seed(seed_val)
-                        self.random_seed = seed_val
-                    except Exception:
-                        random.seed()
-            else:
-                random.seed(5489)
-                self.random_seed = 5489
-
-        # 2. Parse Distributions: uniform_int_distribution, uniform_real_distribution
-        dist_pattern = r'\b(?:std\s*::\s*)?(uniform_(?:int|real)_distribution)\s*(?:<\s*([a-zA-Z_]\w*)\s*>)?\s*([a-zA-Z_]\w*)\s*(?:\{\s*([^}]*)\s*\}|\(\s*([^)]*)\s*\))'
-        for m_d in re.finditer(dist_pattern, code):
-            d_kind = m_d.group(1)
-            t_name = (m_d.group(2) or "").strip()
-            d_name = m_d.group(3).strip()
-            args_str = (m_d.group(4) or m_d.group(5) or "").strip()
-            is_real = ("real" in d_kind) or (t_name in ("double", "float"))
-            d_min, d_max = (1.0, 100.0) if is_real else (1, 100)
-            if args_str:
-                args = [a.strip() for a in args_str.split(",") if a.strip()]
-                if len(args) >= 2:
-                    try:
-                        d_min = float(self.eval_expression(args[0])) if is_real else int(self.eval_expression(args[0]))
-                        d_max = float(self.eval_expression(args[1])) if is_real else int(self.eval_expression(args[1]))
-                    except Exception:
-                        pass
-                elif len(args) == 1:
-                    try:
-                        d_max = float(self.eval_expression(args[0])) if is_real else int(self.eval_expression(args[0]))
-                        d_min = 0.0 if is_real else 0
-                    except Exception:
-                        pass
-            self.distributions[d_name] = (d_min, d_max, is_real)
-            self.random_min = d_min
-            self.random_max = d_max
-            self.is_real_dist = is_real
+        real_dist_match = re.search(r"uniform_real_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", code)
+        if real_dist_match:
+            self.is_real_dist = True
+            self.random_min = float(real_dist_match.group(1))
+            self.random_max = float(real_dist_match.group(2))
+        else:
+            dist_match = re.search(r"uniform_int_distribution\s*(?:<[^>]+>)?\s*\w+\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)", code)
+            if dist_match:
+                self.random_min = int(dist_match.group(1))
+                self.random_max = int(dist_match.group(2))
 
         main_match = re.search(r"int\s+main\s*\([^)]*\)\s*\{(.*)\}", code, re.DOTALL)
         body = main_match.group(1) if main_match else code
@@ -1737,28 +1659,6 @@ class CppUniversalEngine:
         if not s or s.startswith("cout") or s.startswith("return") or s.startswith("std::cout"):
             return
         if re.search(r"\b(?:std\s*::\s*)?cin\s*>>", s):
-            return
-
-        # Ignore random devices, engines and distribution declarations / seed setup
-        if re.search(r'\b(?:std\s*::\s*)?(?:mt19937(?:_64)?|default_random_engine|random_device|uniform_(?:int|real)_distribution)\b', s):
-            m_seed = re.search(r'\b(\w+)\.seed\s*\(([^)]+)\)', s)
-            if m_seed:
-                try:
-                    s_val = int(self.eval_expression(m_seed.group(2)))
-                    random.seed(s_val)
-                    self.random_seed = s_val
-                except Exception:
-                    random.seed()
-            return
-
-        m_seed_call = re.match(r'^([a-zA-Z_]\w*)\.seed\s*\(([^)]+)\);?$', s)
-        if m_seed_call and m_seed_call.group(1) in self.generators:
-            try:
-                s_val = int(self.eval_expression(m_seed_call.group(2)))
-                random.seed(s_val)
-                self.random_seed = s_val
-            except Exception:
-                random.seed()
             return
 
         # --- 3D Присвоєння: a[i][j][k] = val ---
